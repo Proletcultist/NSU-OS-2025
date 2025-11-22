@@ -17,7 +17,7 @@
 		int exc; \
 		exc = setjmp(default_handler); \
 		if (exc != 0){ \
-			THROW(exc); \
+			longjmp(exc_handler_up, exc); \
 		} \
 		curr_handler = &default_handler
 
@@ -30,7 +30,7 @@
 			INITEXC \
 
 
-#define THROW(exception) longjmp(exc_handler_up, exception)
+#define THROW(exception) longjmp(*curr_handler, exception)
 
 #define CALL(name, ...) name(*curr_handler __VA_OPT__(,) __VA_ARGS__)
 
@@ -39,8 +39,8 @@
 			exc = setjmp(exc_handler); \
 			if (exc == 0) 
 #define CATCH(name) 	if (exc == name && (exc = 0) == 0)
-#define TRYCATCHEND	if (exc != 0 && (exc = 0) == 0){ \
-				THROW(exc); \
+#define TRYCATCHEND	if (exc != 0){ \
+				longjmp(exc_handler_up, exc); \
 			} \
 			curr_handler = &default_handler
 
