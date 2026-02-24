@@ -12,10 +12,12 @@
 #include <alloca.h>
 #include <string.h>
 #include <stdbool.h>
+#include <sys/resource.h>
 #include "thread_vec.h"
 
 #define CREATION_MODS S_IRWXU
 #define COPY_BUFFER_SIZE 8192
+#define SLEEP_DURATION 30000
 
 typedef struct copy_argument {
     char *src;
@@ -198,10 +200,18 @@ int spawn_copy_file_thread(copy_argument *arg, pthread_t *tid){
     }
     
     if ((src_stat.st_mode & S_IFMT) == S_IFREG){
-        errno = pthread_create(tid, NULL, copy_regfile, arg);
+        errno = EAGAIN;
+        while (errno == EAGAIN){
+            errno = pthread_create(tid, NULL, copy_regfile, arg);
+            usleep(SLEEP_DURATION);
+        }
     }
     else if ((src_stat.st_mode & S_IFMT) == S_IFDIR){
-        errno = pthread_create(tid, NULL, copy_directory, arg);
+        errno = EAGAIN;
+        while (errno == EAGAIN){
+            errno = pthread_create(tid, NULL, copy_directory, arg);
+            usleep(SLEEP_DURATION);
+        }
     }
     else{
         fprintf(stderr, "[\033[33mWarning\033[0m] File %s not isn't regular file or directory\n", arg->src);
@@ -226,12 +236,13 @@ int main(int argc, char **argv){
         return -1;
     }
 
-    long max_open_desc = sysconf(_SC_OPEN_MAX);
-    if (max_open_desc == -1){
+    struct rlimit max_open_desc;
+    if (getrlimit(RLIMIT_NOFILE, &max_open_desc) == -1){
         perror("Failed to get max opened descriptors amount");
         return -1;
     }
-    errno = sema_init(&open_sem, max_open_desc <= (long) UINT_MAX ? (unsigned) max_open_desc : UINT_MAX, 0, NULL);
+
+    errno = sema_init(&open_sem, max_open_desc.rlim_cur < (rlim_t) UINT_MAX ? (unsigned) max_open_desc.rlim_cur - 4 : UINT_MAX, 0, NULL);
     if (errno){
         perror("Failed to init semaphore");
         return -1;
