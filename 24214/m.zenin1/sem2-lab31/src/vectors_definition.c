@@ -1,5 +1,5 @@
 #include <poll.h>
-#include "connection.h"
+#include "aio_scheduler.h"
 
 #define NAME vector_byte_t
 #define TYPE char
@@ -13,7 +13,6 @@
 
 #define NAME vector_pollfd_t 
 #define TYPE struct pollfd
-#define VECTOR_DECL
 #define VECTOR_IMPL
 #include "template/vector.h"
 #undef VECTOR_DECL
@@ -21,9 +20,8 @@
 #undef NAME
 #undef TYPE
 
-#define NAME vector_connection_t
-#define TYPE connection_t
-#define VECTOR_DECL
+#define NAME vector_task_descriptor_t
+#define TYPE tasks_descriptor_t
 #define VECTOR_IMPL
 #include "template/vector.h"
 #undef VECTOR_DECL
