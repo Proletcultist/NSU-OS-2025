@@ -29,6 +29,6 @@ typedef struct cache {
 
 cache_t cache_construct();
 cache_entry_t* cache_get(cache_t *cache, char *uri);
-void cache_put(cache_t *cache, cache_entry_t entry);
+cache_entry_t* cache_put(cache_t *cache, cache_entry_t entry);
 void cache_remove(cache_t *cache, char *uri);
 void cache_destruct(cache_t *cache);

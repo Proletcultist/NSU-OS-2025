@@ -8,7 +8,7 @@
 
 int main() {
     struct in_addr ip;
-    inet_pton(AF_INET, "192.168.0.5", &ip);
+    inet_pton(AF_INET, "127.0.0.1", &ip);
 
     proxy_t p;
     if (proxy_construct(&p, ip, htons(12345))) {

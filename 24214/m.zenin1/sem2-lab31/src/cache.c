@@ -89,7 +89,7 @@ cache_t cache_construct() {
     return (cache_t) {.arr = NULL, .cap = 0, .size = 0};
 }
 
-void cache_put(cache_t *cache, cache_entry_t entry) {
+cache_entry_t* cache_put(cache_t *cache, cache_entry_t entry) {
 	cache_check_load(cache);
 	cache->size++;
 
@@ -100,7 +100,7 @@ void cache_put(cache_t *cache, cache_entry_t entry) {
 		// Empty place
 		if (cache->arr[pos].type == EMPTY_NODE){
 			cache->arr[pos] = (cache_node_t){.entry = entry, .type = VALUE_NODE, .probe_start = hash};
-			return;
+			return &cache->arr[pos].entry;
 		}
 
 		// Current elem has prob sequence shorter than new elem
@@ -108,7 +108,7 @@ void cache_put(cache_t *cache, cache_entry_t entry) {
 			// Is tombstone
 			if (cache->arr[pos].type == TOMBSTONE_NODE){
                 cache->arr[pos] = (cache_node_t){.entry = entry, .type = VALUE_NODE, .probe_start = hash};
-				return;
+                return &cache->arr[pos].entry;
 			}
 			
 			// Swaping current and new and continue to try find new place for current
@@ -126,7 +126,7 @@ void cache_put(cache_t *cache, cache_entry_t entry) {
 		if (cache->arr[pos].type != TOMBSTONE_NODE && cache->arr[pos].probe_start == hash && strcmp(cache->arr[pos].entry.uri, entry.uri) == 0){
 			cache->arr[pos].entry = entry;
 			cache->size--;
-			return; 
+            return &cache->arr[pos].entry;
 		}
 
 		probe_dist++;

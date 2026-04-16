@@ -2,7 +2,7 @@
 
 #include <poll.h>
 #include <netinet/in.h>
-#include "task.h"
+#include "connection.h"
 #include "cache.h"
 
 #define NAME vector_pollfd_t 
@@ -13,8 +13,8 @@
 #undef NAME
 #undef TYPE
 
-#define NAME vector_task_t_ptr
-#define TYPE task_t*
+#define NAME vector_connection_t
+#define TYPE connection_t
 #define VECTOR_DECL
 #include "template/vector.h"
 #undef VECTOR_DECL
@@ -24,7 +24,7 @@
 typedef struct proxy {
     // 0th fd is always a proxy listening fd
     vector_pollfd_t fds;
-    vector_task_t_ptr tasks;
+    vector_connection_t connections;
     cache_t cache;
 } proxy_t;
 

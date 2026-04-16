@@ -1,3 +1,5 @@
+#pragma once
+
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -9,14 +11,17 @@
 #undef NAME
 #undef TYPE
 
+typedef struct exchange_callback {
+    int a;
+} exchange_callback_t;
+
 typedef struct exchange_buffer {
-    size_t readers_amount;
-    bool writing;
     vector_byte_t buffer;
+    bool active;
+
+    exchange_callback_t *callback;
 } exchange_buffer_t;
 
 exchange_buffer_t exchange_buffer_construct();
-void exchange_buffer_start_writing(exchange_buffer_t *eb);
-void exchange_buffer_start_reading(exchange_buffer_t *eb);
-void exchange_buffer_push(exchange_buffer_t *eb, char *data, size_t size);
+char* exchange_buffer_reserve(exchange_buffer_t *eb, size_t reserving);
 void exchange_buffer_destruct(exchange_buffer_t *eb);
