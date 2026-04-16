@@ -6,8 +6,6 @@
 #include <stddef.h>
 #include "aio_scheduler.h"
 
-aio_scheduler_t sched;
-
 static void accept_connection(ssize_t r, int errno, void *udata) {
     task_t *task = udata;
 
@@ -23,8 +21,6 @@ static void accept_connection(ssize_t r, int errno, void *udata) {
 }
 
 int main() {
-    sched = aio_scheduler_construct();
-
     struct in_addr ip;
     in_port_t port = htons(12345);
     inet_pton(AF_INET, "127.0.0.1", &ip);
@@ -51,10 +47,10 @@ int main() {
                               .callback = accept_connection
                            };
 
-    aio_scheduler_schedule(&sched, &accept_task);
+    aio_scheduler_schedule(&accept_task);
 
     while (true) {
-        aio_scheduler_proceed(&sched);
+        aio_scheduler_proceed();
     }
 
     return 0;
