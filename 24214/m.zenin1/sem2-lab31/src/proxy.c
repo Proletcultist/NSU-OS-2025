@@ -5,17 +5,21 @@
 #include <unistd.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include "task.h"
+#include "connection.h"
 #include "proxy.h"
 #include "cache.h"
 
+#define RESERVING_SIZE 512
+
 int proxy_construct(proxy_t *proxy, struct in_addr ip, in_port_t port) {
     *proxy = (proxy_t) {.fds = vector_pollfd_t_construct(),
-                        .tasks = vector_task_t_ptr_construct(),
+                        .connections = vector_connection_t_construct(),
                         .cache = cache_construct()};
 
     int listening = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in addr = {.sin_family = AF_INET, .sin_port = port, .sin_addr = ip};
+    struct sockaddr_in addr = {.sin_family = AF_INET,
+                               .sin_port = port,
+                               .sin_addr = ip};
     if (bind(listening, (struct sockaddr*) &addr, sizeof(addr))) {
         return -1;
     }
@@ -23,8 +27,10 @@ int proxy_construct(proxy_t *proxy, struct in_addr ip, in_port_t port) {
         return -1;
     }
 
-    vector_pollfd_t_push(&proxy->fds, (struct pollfd) {.fd = listening, .events = POLLIN, .revents = 0});
-    proxy->tasks.size = 1;
+    vector_pollfd_t_push(&proxy->fds, (struct pollfd) {.fd = listening,
+                                                       .events = POLLIN,
+                                                       .revents = 0});
+    proxy->connections.size = 1;
 
     return 0;
 }
@@ -40,11 +46,27 @@ static void proxy_connect_new_client(proxy_t *proxy) {
         fprintf(stderr, "[Info] Connected: %s\n", buff);
     }
 
-    vector_pollfd_t_push(&proxy->fds, (struct pollfd) {.fd = fd, .events = POLLIN, .revents = 0});
+    vector_pollfd_t_push(&proxy->fds, (struct pollfd) {.fd = fd,
+                                                       .events = POLLIN,
+                                                       .revents = 0});
 
-    read_request_task_t *task = malloc(sizeof(read_request_task_t));
-    *task = (read_request_task_t) {.super = {.type = READ_REQUEST, .next = NULL}, .buffer = NULL};
-    vector_task_t_ptr_push(&proxy->tasks, (task_t*) task);
+    exchange_buffer_t *request_buffer = malloc(sizeof(exchange_buffer_t));
+    *request_buffer = exchange_buffer_construct();
+    vector_connection_t_push(&proxy->connections, (connection_t) {.type = CLIENT_CONNECTION,
+                                                                  .c.client = {.status = READ_REQUEST, 
+                                                                               .bytes_sended_back = 0,
+                                                                               .request_exchange = request_buffer,
+                                                                               .response_exchange = NULL}});
+}
+
+static void proxy_handle_reading(connection_t *conn, int fd) {
+    if (conn->type == CLIENT_CONNECTION && conn->c.client.status == READ_REQUEST) {
+    }
+    else if (conn->type == SERVER_CONNECTION && conn->c.server.status == WRITE_RESPONSE) {
+    }
+    else {
+        // TODO: Handle
+    }
 }
 
 void proxy_proceed(proxy_t *proxy) {
@@ -65,7 +87,7 @@ void proxy_proceed(proxy_t *proxy) {
 
     for (size_t i = 1; i < proxy->fds.size; i++) {
         if (proxy->fds.arr[i].revents & POLLIN) {
-            
+            proxy_handle_reading(&proxy->connections.arr[i], proxy->fds.arr[i].fd);
         }
     }
 }
@@ -75,6 +97,6 @@ void proxy_destruct(proxy_t *proxy) {
         close(proxy->fds.arr[i].fd);
     }
     vector_pollfd_t_destruct(&proxy->fds);
-    vector_task_t_ptr_destruct(&proxy->tasks);
+    vector_connection_t_destruct(&proxy->connections);
     cache_destruct(&proxy->cache);
 }
