@@ -10,7 +10,6 @@
 #undef NAME
 #undef TYPE
 
-
 typedef enum task_type {
     ACCEPT_CONNECTION_REQUESTS,
     READ_REQUEST,
@@ -53,7 +52,6 @@ typedef struct aio_scheduler {
     vector_task_descriptor_t tasks;
 } aio_scheduler_t;
 
-aio_scheduler_t aio_scheduler_construct();
-void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task);
-void aio_scheduler_proceed(aio_scheduler_t *sched);
-void aio_scheduler_destruct(aio_scheduler_t *sched);
+void aio_scheduler_schedule(task_t *task);
+void aio_scheduler_proceed();
+void aio_scheduler_destruct();

@@ -4,27 +4,28 @@
 #include <stdlib.h>
 #include "aio_scheduler.h"
 
-aio_scheduler_t aio_scheduler_construct() {
-    return (aio_scheduler_t) {.fds = vector_pollfd_t_construct(), .tasks = vector_task_descriptor_t_construct()};
-}
+aio_scheduler_t sched = {
+                            .fds = (vector_pollfd_t) VECTOR_INITIALIZER,
+                            .tasks = (vector_task_descriptor_t) VECTOR_INITIALIZER
+                        };
 
-void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task) {
+void aio_scheduler_schedule(task_t *task) {
     struct pollfd *fd = NULL;
     tasks_descriptor_t *desc = NULL;
 
     task->next = NULL;
     
-    for (size_t i = 0; i < sched->fds.size; i++) {
-        if (sched->fds.arr[i].fd == task->fd) {
-            fd = &sched->fds.arr[i];
-            desc = &sched->tasks.arr[i];
+    for (size_t i = 0; i < sched.fds.size; i++) {
+        if (sched.fds.arr[i].fd == task->fd) {
+            fd = &sched.fds.arr[i];
+            desc = &sched.tasks.arr[i];
             break;
         }
     }
 
     // Add fd and tasks_descriptor
     if (desc == NULL) {
-        vector_pollfd_t_push(&sched->fds, (struct pollfd)
+        vector_pollfd_t_push(&sched.fds, (struct pollfd)
                                           {
                                             .fd = task->fd,
                                             .events = 0,
@@ -34,15 +35,15 @@ void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task) {
         task_t *sentinel = malloc(sizeof(task_t));
         sentinel->next = NULL;
 
-        vector_task_descriptor_t_push(&sched->tasks, (tasks_descriptor_t) 
+        vector_task_descriptor_t_push(&sched.tasks, (tasks_descriptor_t) 
                                                      {.first = sentinel,
                                                       .last = sentinel,
                                                       .reads_amount = 0,
                                                       .writes_amount = 0});
 
 
-        fd = &sched->fds.arr[sched->fds.size - 1];
-        desc = &sched->tasks.arr[sched->tasks.size - 1];
+        fd = &sched.fds.arr[sched.fds.size - 1];
+        desc = &sched.tasks.arr[sched.tasks.size - 1];
     }
 
     // Add task at the end of tasks list
@@ -82,19 +83,19 @@ static void aio_proceed_tasks(int fd, short revents, tasks_descriptor_t *tasks) 
     }
 }
 
-void aio_scheduler_proceed(aio_scheduler_t *sched) {
+void aio_scheduler_proceed() {
     fprintf(stderr, "Poll\n");
-    poll(sched->fds.arr, sched->fds.size, -1);
+    poll(sched.fds.arr, sched.fds.size, -1);
 
-    for (size_t i = 0; i < sched->fds.size; i++) {
-        if (sched->fds.arr[i].revents & (POLLIN | POLLOUT)) {
-            aio_proceed_tasks(sched->fds.arr[i].fd, sched->fds.arr[i].revents, &sched->tasks.arr[i]);
+    for (size_t i = 0; i < sched.fds.size; i++) {
+        if (sched.fds.arr[i].revents & (POLLIN | POLLOUT)) {
+            aio_proceed_tasks(sched.fds.arr[i].fd, sched.fds.arr[i].revents, &sched.tasks.arr[i]);
         }
-        else if (sched->fds.arr[i].revents & (POLLHUP | POLLERR)) {
+        else if (sched.fds.arr[i].revents & (POLLHUP | POLLERR)) {
             // TODO: Delete socket
         }
     }
 }
 
-void aio_scheduler_destruct(aio_scheduler_t *sched) {
+void aio_scheduler_destruct() {
 }

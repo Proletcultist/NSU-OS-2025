@@ -9,6 +9,10 @@
 #ifdef VECTOR_DECL
 #include <stddef.h>
 
+#ifndef VECTOR_INITIALIZER
+    #define VECTOR_INITIALIZER {NULL, 0, 0}
+#endif
+
 typedef struct NAME{
 	TYPE *arr;
 	size_t cap, size;
