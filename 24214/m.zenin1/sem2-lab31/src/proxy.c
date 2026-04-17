@@ -5,7 +5,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <stddef.h>
-#include "aio_scheduler.h"
+#include "scheduler/aio_scheduler.h"
 
 #define CHUNK_SIZE 512
 
@@ -103,14 +103,15 @@ void start_proxy(struct in_addr ip, in_port_t port) {
     }
 
     task_t accept_task;
-    accept_task = (task_t) {
-                              .type = ACCEPT_CONNECTION_REQUESTS,
-                              .fd = listening,
-                              .buffer = NULL,
-                              .size = 0,
-                              .data = &accept_task,
-                              .callback = accept_connection
-                           };
+    accept_task = (task_t) 
+                  {
+                     .type = ACCEPT_CONNECTION_REQUESTS,
+                     .fd = listening,
+                     .buffer = NULL,
+                     .size = 0,
+                     .data = &accept_task,
+                     .callback = accept_connection
+                  };
 
     aio_scheduler_schedule(&accept_task);
 
