@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -7,7 +8,7 @@
 #include <stddef.h>
 #include "scheduler/aio_scheduler.h"
 
-#define CHUNK_SIZE 512
+#define CHUNK_SIZE 2
 
 typedef struct vector_buffered_task {
     task_t task;
@@ -17,14 +18,26 @@ typedef struct vector_buffered_task {
 } vector_buffered_task_t;
 
 static void read_req_line_callback(ssize_t r, int errno, void *udata) {
+    vector_buffered_task_t *task = udata;
+
     if (r < 0) {
-        // TODO: Handle errors
+        fprintf(stderr, "[Error] Error while trying to read: %s\n", strerror(errno));
+
+        // Deallocate vector
+        free(task->data);
+        // Deallocate task itself
+        free(task);
+        return;
     }
     else if (r == 0) {
-        // TODO: Handle EOF
-    }
+        fprintf(stderr, "[Error] Client terminated connection\n");
 
-    vector_buffered_task_t *task = udata;
+        // Deallocate vector
+        free(task->data);
+        // Deallocate task itself
+        free(task);
+        return;
+    }
 
     task->size += (size_t) r;
 
@@ -34,7 +47,11 @@ static void read_req_line_callback(ssize_t r, int errno, void *udata) {
     }
     printf("\n");
 
-    // TODO: Realloc if buffer exceeded
+    if (task->size == task->cap) {
+        task->cap += CHUNK_SIZE;
+        task->data = realloc(task->data, task->cap);
+    }
+
     *task = (vector_buffered_task_t)
             {
                  .task = {
