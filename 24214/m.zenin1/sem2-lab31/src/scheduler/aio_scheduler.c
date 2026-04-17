@@ -8,7 +8,8 @@
 
 aio_scheduler_t sched = {
                             .fds = (vector_pollfd_t) VECTOR_INITIALIZER,
-                            .task_lists = (vector_task_list_t) VECTOR_INITIALIZER
+                            .task_lists = (vector_task_list_t) VECTOR_INITIALIZER,
+                            .fdToIndex = (map_int_size_t) HASHMAP_INITIALIZER
                         };
 
 static inline void aio_delete_task(struct pollfd *pollfd, task_list_t *tasks, task_t *prev, task_t *this) {
@@ -54,20 +55,11 @@ static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t 
 
 void aio_scheduler_schedule(task_t *task) {
     struct pollfd *fd = NULL;
-    task_list_t *desc = NULL;
+    task_list_t *tasks = NULL;
 
-    task->next = NULL;
-    
-    for (size_t i = 0; i < sched.fds.size; i++) {
-        if (sched.fds.arr[i].fd == task->fd) {
-            fd = &sched.fds.arr[i];
-            desc = &sched.task_lists.arr[i];
-            break;
-        }
-    }
+    size_t *index = map_int_size_t_get(&sched.fdToIndex, task->fd);
 
-    // Add fd and tasks_descriptor
-    if (desc == NULL) {
+    if (index == NULL) {
         vector_pollfd_t_push(&sched.fds, (struct pollfd)
                                           {
                                             .fd = task->fd,
@@ -78,16 +70,22 @@ void aio_scheduler_schedule(task_t *task) {
         vector_task_list_t_push(&sched.task_lists, task_list_construct());
 
         fd = &sched.fds.arr[sched.fds.size - 1];
-        desc = &sched.task_lists.arr[sched.task_lists.size - 1];
+        tasks = &sched.task_lists.arr[sched.task_lists.size - 1];
+
+        map_int_size_t_set(&sched.fdToIndex, task->fd, sched.fds.size - 1);
+    }
+    else {
+        fd = &sched.fds.arr[*index];
+        tasks = &sched.task_lists.arr[*index];
     }
 
-    task_list_append(desc, task);
+    task_list_append(tasks, task);
 
     // Add poll event to wait for
-    if (desc->reads_amount != 0) {
+    if (tasks->reads_amount != 0) {
         fd->events |= POLLIN;
     }
-    if (desc->writes_amount != 0) {
+    if (tasks->writes_amount != 0) {
         fd->events |= POLLOUT;
     }
 }

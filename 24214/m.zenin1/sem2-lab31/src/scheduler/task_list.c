@@ -15,6 +15,7 @@ task_list_t task_list_construct() {
 }
 
 void task_list_append(task_list_t *tl, task_t *task) {
+    task->next = NULL;
     tl->last->next = task;
     tl->last = task;
 
