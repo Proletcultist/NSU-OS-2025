@@ -7,65 +7,61 @@
 #include <sys/types.h>
 #include <stddef.h>
 #include "scheduler/aio_scheduler.h"
+#include "proxy/request_analysis.h"
 
-#define CHUNK_SIZE 2
+#define CHUNK_SIZE 512
 
-typedef struct vector_buffered_task {
+typedef struct request_analysis_task {
     task_t task;
 
-    void *data;
-    size_t size, cap;
-} vector_buffered_task_t;
+    request_analysis_data_t analysis_data;
+} request_analysis_task_t;
+
 
 static void read_req_line_callback(ssize_t r, int errno, void *udata) {
-    vector_buffered_task_t *task = udata;
+    request_analysis_task_t *task = udata;
 
+    // Check for errors or connection closed
     if (r < 0) {
         fprintf(stderr, "[Error] Error while trying to read: %s\n", strerror(errno));
 
-        // Deallocate vector
-        free(task->data);
-        // Deallocate task itself
+        request_analysis_data_t_destruct(&task->analysis_data);
         free(task);
         return;
     }
     else if (r == 0) {
         fprintf(stderr, "[Error] Client terminated connection\n");
 
-        // Deallocate vector
-        free(task->data);
-        // Deallocate task itself
+        request_analysis_data_t_destruct(&task->analysis_data);
         free(task);
         return;
     }
 
-    task->size += (size_t) r;
+    // Adjust size and enlarge buffer if needed
+    task->analysis_data.data.size += (size_t) r;
 
-    printf("\nBuffer content (size: %zu):\n", task->size);
-    for (size_t i = 0; i < task->size; i++) {
-        printf("%c", ((char*) task->data)[i]);
+    printf("\nBuffer content:\n");
+    for (size_t i = 0; i < task->analysis_data.data.size; i++) {
+        printf("%c", task->analysis_data.data.arr[i]);
     }
     printf("\n");
 
-    if (task->size == task->cap) {
-        task->cap += CHUNK_SIZE;
-        task->data = realloc(task->data, task->cap);
+    request_analyzis_result_t res = try_analyze(&task->analysis_data);
+
+    if (task->analysis_data.data.size == task->analysis_data.data.cap) {
+        vector_char_t_reserve(&task->analysis_data.data, task->analysis_data.data.cap + CHUNK_SIZE);
     }
 
-    *task = (vector_buffered_task_t)
-            {
-                 .task = {
+    task->task = (task_t)
+                 {
                      .type = READ_REQUEST,
                      .fd = task->task.fd,
-                     .buffer = (char*) task->data + task->size,
-                     .size = task->cap - task->size,
+                     .buffer = task->analysis_data.data.arr + task->analysis_data.data.size,
+                     .size = task->analysis_data.data.cap - task->analysis_data.data.size,
                      .data = task,
                      .callback = read_req_line_callback
-                 },
-                 .data = task->data,
-                 .size = task->size,
-                 .cap = task->cap
-            };
+                 };
+
     aio_scheduler_schedule((task_t*) task);
 }
 
@@ -82,22 +78,20 @@ static void accept_connection(ssize_t r, int errno, void *udata) {
         fprintf(stderr, "[Info] Connected: %s\n", buff);
     }
 
-    vector_buffered_task_t *read_req_task = malloc(sizeof(vector_buffered_task_t));
-    void *buffer = malloc(CHUNK_SIZE); 
-    *read_req_task = (vector_buffered_task_t) 
-                     {
-                         .task = {
-                             .type = READ_REQUEST,
-                             .fd = fd,
-                             .buffer = buffer,
-                             .size = CHUNK_SIZE,
-                             .data = read_req_task,
-                             .callback = read_req_line_callback
-                         },
-                         .data = buffer,
-                         .size = 0,
-                         .cap = CHUNK_SIZE
-                     };
+    request_analysis_task_t *read_req_task = malloc(sizeof(request_analysis_task_t));
+
+    read_req_task->analysis_data = REQUEST_ANALYSIS_DATA_INITIALIZER;
+    vector_char_t_reserve(&read_req_task->analysis_data.data, CHUNK_SIZE);
+
+    read_req_task->task = (task_t)
+                          {
+                              .type = READ_REQUEST,
+                              .fd = fd,
+                              .buffer = read_req_task->analysis_data.data.arr,
+                              .size = read_req_task->analysis_data.data.cap,
+                              .data = read_req_task,
+                              .callback = read_req_line_callback
+                          };
 
     aio_scheduler_schedule((task_t*) read_req_task);
 }
