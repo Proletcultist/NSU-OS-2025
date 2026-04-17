@@ -17,10 +17,19 @@
 #undef NAME
 #undef TYPE
 
-typedef struct aio_scheduler {
-    vector_pollfd_t fds;
+#define NAME map_int_size_t
+#define KEY_TYPE int
+#define VALUE_TYPE size_t
+#define HASHMAP_DECL
+#include "template/hashmap.h"
+#undef KEY_TYPE
+#undef VALUE_TYPE
+#undef HASHMAP_DECL
 
-    // TODO: use fd to task_list instead
+typedef struct aio_scheduler {
+    map_int_size_t fdToIndex;
+
+    vector_pollfd_t fds;
     vector_task_list_t task_lists;
 } aio_scheduler_t;
 
