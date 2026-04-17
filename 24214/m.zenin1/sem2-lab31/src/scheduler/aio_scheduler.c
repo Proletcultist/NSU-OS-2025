@@ -35,9 +35,9 @@ static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t 
 
         if (revents & POLLIN) {
             if (cursor->type == ACCEPT_CONNECTION_REQUESTS) {
-                cursor->callback(0, 0, cursor);
+                aio_delete_task(pollfd, tasks, prev, cursor);
 
-                prev = cursor;
+                cursor->callback(0, 0, cursor);
             }
             else if (cursor->type == READ_REQUEST) {
                 aio_delete_task(pollfd, tasks, prev, cursor);

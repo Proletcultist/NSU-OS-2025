@@ -94,6 +94,7 @@ static void accept_connection(ssize_t r, int errno, void *udata) {
                           };
 
     aio_scheduler_schedule((task_t*) read_req_task);
+    aio_scheduler_schedule(task);
 }
 
 
