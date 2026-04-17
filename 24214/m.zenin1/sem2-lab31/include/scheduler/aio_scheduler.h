@@ -25,6 +25,7 @@
 #undef KEY_TYPE
 #undef VALUE_TYPE
 #undef HASHMAP_DECL
+#undef NAME
 
 typedef struct aio_scheduler {
     map_int_size_t fdToIndex;

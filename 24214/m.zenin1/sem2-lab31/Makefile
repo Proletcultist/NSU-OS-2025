@@ -8,7 +8,7 @@ CC = gcc
 CC_ARGS = -g -Wall -Wextra -I ${INCLUDE_DIR}
 DEP_ARGS = -MT $@ -MMD -MP -MF ${DEPS_DIR}/$*.d
 
-SOURCES = main.c proxy.c vectors_definition.c maps_definition.c scheduler/aio_scheduler.c scheduler/task_list.c
+SOURCES = main.c vectors_definition.c maps_definition.c proxy/proxy.c proxy/request_analysis.c scheduler/aio_scheduler.c scheduler/task_list.c
 
 main: ${BUILD_DIR}/main
 

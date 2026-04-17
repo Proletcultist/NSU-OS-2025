@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <stddef.h>
-#include "proxy.h"
+#include "proxy/proxy.h"
 
 int main() {
     struct in_addr ip;
