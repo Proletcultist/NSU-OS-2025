@@ -21,13 +21,6 @@ ${BUILD_DIR}/main: $(patsubst %.c, ${OBJECTS_DIR}/%.o, ${SOURCES})
 	mkdir -p ${BUILD_DIR}
 	${CC} ${CC_ARGS} -o $@ $^
 
-${BUILD_DIR}:
-	mkdir -p $@
-${OBJECTS_TO_BUILD}:
-	mkdir -p $@
-${DEPS_DIR}:
-	mkdir -p $@
-
 $(patsubst %.c, ${DEPS_DIR}/%.d, ${SOURCES}):
 
 include $(patsubst %.c, ${DEPS_DIR}/%.d, ${SOURCES})
