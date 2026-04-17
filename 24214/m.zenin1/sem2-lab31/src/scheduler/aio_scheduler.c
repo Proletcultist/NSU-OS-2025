@@ -30,10 +30,14 @@ static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t 
     bool written = false;
     task_t *prev = tasks->first;
 
-    for (task_t *cursor = tasks->first->next; cursor != NULL; cursor = cursor->next) {
+    for (task_t *cursor = tasks->first->next; cursor != NULL;) {
+        task_t *tmp = cursor->next;
+
         if (revents & POLLIN) {
             if (cursor->type == ACCEPT_CONNECTION_REQUESTS) {
                 cursor->callback(0, 0, cursor);
+
+                prev = cursor;
             }
             else if (cursor->type == READ_REQUEST) {
                 aio_delete_task(pollfd, tasks, prev, cursor);
@@ -46,10 +50,11 @@ static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t 
         else if (revents & POLLOUT) {
             if (cursor->type == WRITE_REQUEST) {
                 // TODO: Do NONBLOCK write, proceed with task, set written
+                prev = cursor;
             }
         }
 
-        prev = cursor;
+        cursor = tmp;
     }
 }
 
