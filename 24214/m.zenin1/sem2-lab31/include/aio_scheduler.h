@@ -21,11 +21,10 @@ typedef struct task {
 
     int fd;
     void *buffer;
-    size_t off;
     size_t size;
 
     void *data;
-    void (*callback)(ssize_t r, int errno, void *udata);
+    void (*callback)(ssize_t, int, void*);
 
     struct task *next;
 } task_t;
