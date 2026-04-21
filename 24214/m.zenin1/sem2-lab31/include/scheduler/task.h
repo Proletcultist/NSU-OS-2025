@@ -19,5 +19,6 @@ typedef struct task {
     void *data;
     void (*callback)(ssize_t, int, void*);
 
+    size_t written;
     struct task *next;
 } task_t;

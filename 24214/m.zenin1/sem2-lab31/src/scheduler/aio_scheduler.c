@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <poll.h>
 #include <stddef.h>
@@ -23,6 +24,8 @@ static inline void aio_delete_task(struct pollfd *pollfd, task_list_t *tasks, ta
     }
     if (tasks->reads_amount == 0 && tasks->writes_amount == 0) {
         // TODO: Delete fd and descriptor
+        map_int_size_t_remove(&sched.fdToIndex, pollfd->fd);
+        pollfd->fd = -1;
     }
 }
 
@@ -48,9 +51,27 @@ static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t 
             }
         }
         else if (revents & POLLOUT) {
-            if (cursor->type == WRITE_REQUEST) {
-                // TODO: Do NONBLOCK write, proceed with task, set written
-                prev = cursor;
+            if (cursor->type == WRITE_REQUEST && !written) {
+                written = true;
+                ssize_t w = write(cursor->fd, cursor->buffer, cursor->size);
+                int tmp = errno;
+
+                if (w >= 0) {
+                    cursor->written += (size_t) w;
+                    if (cursor->written == cursor->size) {
+                        // Write had completed
+                        aio_delete_task(pollfd, tasks, prev, cursor);
+                        cursor->callback(cursor->written, tmp, cursor->data);
+                    }
+                    else {
+                        prev = cursor;
+                    }
+                }
+                else {
+                    // Write had failed
+                    aio_delete_task(pollfd, tasks, prev, cursor);
+                    cursor->callback(w, tmp, cursor->data);
+                }
             }
         }
 
@@ -59,6 +80,10 @@ static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t 
 }
 
 void aio_scheduler_schedule(task_t *task) {
+    task->written = 0;
+    int flags = fcntl(task->fd, F_GETFL, 0);
+    fcntl(task->fd, F_SETFL, flags | O_NONBLOCK);
+
     struct pollfd *fd = NULL;
     task_list_t *tasks = NULL;
 

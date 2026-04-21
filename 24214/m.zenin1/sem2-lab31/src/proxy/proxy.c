@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "scheduler/aio_scheduler.h"
 #include "proxy/request_analysis.h"
+#include "proxy/responses.h"
 
 #define CHUNK_SIZE 512
 
@@ -17,6 +18,20 @@ typedef struct request_analysis_task {
     request_analysis_data_t analysis_data;
 } request_analysis_task_t;
 
+static void write_response_callback(ssize_t r, int errno, void *udata) {
+    task_t *task = udata;
+
+    // Check for errors or connection closed
+    if (r < 0) {
+        fprintf(stderr, "[Error] Error while trying to write: %s\n", strerror(errno));
+    }
+    else if (r == 0) {
+        fprintf(stderr, "[Error] Client terminated connection\n");
+    }
+
+    close(task->fd);
+    free(task);
+}
 
 static void read_req_line_callback(ssize_t r, int errno, void *udata) {
     request_analysis_task_t *task = udata;
@@ -47,22 +62,45 @@ static void read_req_line_callback(ssize_t r, int errno, void *udata) {
     printf("\n");
 
     request_analyzis_result_t res = try_analyze(&task->analysis_data);
+    switch (res) {
+        case INCOMPLETE:
+            if (task->analysis_data.data.size == task->analysis_data.data.cap) {
+                vector_char_t_reserve(&task->analysis_data.data, task->analysis_data.data.cap + CHUNK_SIZE);
+            }
 
-    if (task->analysis_data.data.size == task->analysis_data.data.cap) {
-        vector_char_t_reserve(&task->analysis_data.data, task->analysis_data.data.cap + CHUNK_SIZE);
+            task->task = (task_t)
+                         {
+                             .type = READ_REQUEST,
+                             .fd = task->task.fd,
+                             .buffer = task->analysis_data.data.arr + task->analysis_data.data.size,
+                             .size = task->analysis_data.data.cap - task->analysis_data.data.size,
+                             .data = task,
+                             .callback = read_req_line_callback
+                         };
+
+            aio_scheduler_schedule((task_t*) task);
+            break;
+        case MALFORMED:
+            request_analysis_data_t_destruct(&task->analysis_data);
+
+            task_t *write_error_task = malloc(sizeof(task_t));
+            *write_error_task = (task_t)
+                                {
+                                    .type = WRITE_REQUEST,
+                                    .fd = task->task.fd,
+                                    .buffer = bad_request_response,
+                                    .size = bad_request_response_size,
+                                    .data = write_error_task,
+                                    .callback = write_response_callback
+                                };
+            aio_scheduler_schedule(write_error_task);
+
+            free(task);
+            break;
+        case COMPLETE:
+            break;
     }
 
-    task->task = (task_t)
-                 {
-                     .type = READ_REQUEST,
-                     .fd = task->task.fd,
-                     .buffer = task->analysis_data.data.arr + task->analysis_data.data.size,
-                     .size = task->analysis_data.data.cap - task->analysis_data.data.size,
-                     .data = task,
-                     .callback = read_req_line_callback
-                 };
-
-    aio_scheduler_schedule((task_t*) task);
 }
 
 static void accept_connection(ssize_t r, int errno, void *udata) {
