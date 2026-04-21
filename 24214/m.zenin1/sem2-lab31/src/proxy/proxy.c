@@ -14,7 +14,7 @@
 
 typedef struct request_analysis_task {
     task_t task;
-
+    char client_ip[16];
     request_analysis_data_t analysis_data;
 } request_analysis_task_t;
 
@@ -38,14 +38,14 @@ static void read_req_line_callback(ssize_t r, int errno, void *udata) {
 
     // Check for errors or connection closed
     if (r < 0) {
-        fprintf(stderr, "[Error] Error while trying to read: %s\n", strerror(errno));
+        fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->client_ip, strerror(errno));
 
         request_analysis_data_t_destruct(&task->analysis_data);
         free(task);
         return;
     }
     else if (r == 0) {
-        fprintf(stderr, "[Error] Client terminated connection\n");
+        fprintf(stderr, "[Error] Client %s terminated connection\n", task->client_ip);
 
         request_analysis_data_t_destruct(&task->analysis_data);
         free(task);
@@ -110,13 +110,15 @@ static void accept_connection(ssize_t r, int errno, void *udata) {
     socklen_t connected_len = sizeof(connected_addr);
     int fd = accept(task->fd, &connected_addr, &connected_len);
 
-    if (connected_addr.sa_family == AF_INET) {
-        char buff[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &((struct sockaddr_in*) &connected_addr)->sin_addr, buff, INET_ADDRSTRLEN);
-        fprintf(stderr, "[Info] Connected: %s\n", buff);
-    }
 
     request_analysis_task_t *read_req_task = malloc(sizeof(request_analysis_task_t));
+    if (connected_addr.sa_family == AF_INET) {
+        inet_ntop(AF_INET, &((struct sockaddr_in*) &connected_addr)->sin_addr, read_req_task->client_ip, INET_ADDRSTRLEN);
+        fprintf(stderr, "[Info] Connected: %s\n", read_req_task->client_ip);
+    }
+    else {
+        strncpy(read_req_task->client_ip, "Unknown", sizeof(read_req_task->client_ip) - 1);
+    }
 
     read_req_task->analysis_data = REQUEST_ANALYSIS_DATA_INITIALIZER;
     vector_char_t_reserve(&read_req_task->analysis_data.data, CHUNK_SIZE);
