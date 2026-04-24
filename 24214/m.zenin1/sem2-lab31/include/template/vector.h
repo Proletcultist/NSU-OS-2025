@@ -65,9 +65,10 @@ TYPE CONCAT(NAME, _pop)(NAME *vec){
 
 void CONCAT(NAME, _reserve)(NAME *vec, size_t cap){ 
 	if (vec->cap < cap){ 
-		vec->arr = realloc(vec->arr, cap * sizeof(TYPE)); 
-		vec->cap = cap; 
-	} 
+        size_t new_cap = vec->cap * 2 > cap ? vec->cap * 2 : cap;
+        vec->arr = realloc(vec->arr, new_cap * sizeof(TYPE)); 
+        vec->cap = new_cap; 
+	}
 } 
 
 void CONCAT(NAME, _resize)(NAME *vec, size_t newCnt, TYPE fill){ 
