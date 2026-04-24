@@ -11,28 +11,38 @@
 #undef TYPE
 #undef NAME
 
+#define URI_INITIALIZER ((uri_t) \
+                         { \
+                          .buffer = NULL, \
+                          .hostname = NULL, \
+                          .port = NULL, \
+                          .path = NULL, \
+                         })
+
 #define REQUEST_ANALYSIS_DATA_INITIALIZER ((request_analysis_data_t) \
                                            { \
                                             .state = READING_REQUEST_LINE, \
-                                            .uri = NULL, \
-                                            .ip = INADDR_ANY, \
-                                            .port = 0, \
+                                            .uri = URI_INITIALIZER, \
                                             .cacheable = false, \
                                             .content_size = 0, \
                                             .analyzed = 0, \
                                             .data = (vector_char_t) VECTOR_INITIALIZER \
                                            })
-
 typedef enum request_analysis_state {
     READING_REQUEST_LINE,
     READING_HEADERS
 } request_analysis_state_t;
 
+typedef struct uri {
+    char *buffer;
+    char *hostname;
+    char *port;
+    char *path;
+} uri_t;
+
 typedef struct request_analysis_data {
     request_analysis_state_t state;   
-    char *uri;
-    struct in_addr ip;
-    in_port_t port;
+    uri_t uri;
     bool cacheable;
     size_t content_size;
 
@@ -40,13 +50,15 @@ typedef struct request_analysis_data {
     vector_char_t data;
 } request_analysis_data_t;
 
-typedef enum request_analyzis_result {
-    INCOMPLETE, // Request + headers not ended yet
-    MALFORMED,  // Bad request
-    COMPLETE    // Request + headers all read, can start transfer body if there is any
-} request_analyzis_result_t;
+typedef enum request_analysis_result {
+    INCOMPLETE,             // Request + headers not ended yet
+    MALFORMED,              // Bad request (400)
+    METHOD_NOT_IMPLEMENTED, // HTTP 501
+    VERSION_NOT_SUPPORTED,  // HTTP 505
+    COMPLETE                // Request + headers all read, can start transfer body if there is any
+} request_analysis_result_t;
 
-request_analyzis_result_t try_analyze_req_line(request_analysis_data_t *data);
-request_analyzis_result_t try_analyze_header(request_analysis_data_t *data);
-request_analyzis_result_t try_analyze(request_analysis_data_t *data);
+request_analysis_result_t try_analyze_req_line(request_analysis_data_t *data);
+request_analysis_result_t try_analyze_header(request_analysis_data_t *data);
+request_analysis_result_t try_analyze_next_line(request_analysis_data_t *data);
 void request_analysis_data_t_destruct(request_analysis_data_t *data);
