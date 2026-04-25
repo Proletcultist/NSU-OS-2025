@@ -20,8 +20,8 @@ typedef struct request_analysis_task {
 } request_analysis_task_t;
 
 static char* findEOL(char *buff, size_t size) {
-    for (size_t i = 0; i < size - 1; i++) {
-        if (buff[i] == '\r' && buff[i + 1] == '\n') {
+    for (size_t i = 0; i < size; i++) {
+        if (buff[i] == '\n') {
             return buff + i;
         }
     }
@@ -70,7 +70,12 @@ static void read_req_line_callback(ssize_t r, int errno, void *udata) {
     task->analysis_data.data.size += (size_t) r;
 
     printf("\nBuffer content:\n");
-    for (size_t i = 0; i < task->analysis_data.data.size; i++) {
+    printf("\033[32m");
+    for (size_t i = 0; i < task->analysis_data.analyzed; i++) {
+        printf("%c", task->analysis_data.data.arr[i]);
+    }
+    printf("\033[0m");
+    for (size_t i = task->analysis_data.analyzed; i < task->analysis_data.data.size; i++) {
         printf("%c", task->analysis_data.data.arr[i]);
     }
     printf("\n");

@@ -8,7 +8,7 @@
 // \0 and \r\n are considered as line ends
 static bool linencmp(char *s1, char *s2, size_t n) {
     while (n --> 0) {
-        if ((*s1 == '\0' || (*s1 == '\r' && *(s1 + 1) == '\n')) && (*s2 == '\0' || (*s2 == '\r' && *(s2 + 1) == '\n'))) {
+        if ((*s1 == '\0' || (*s1 == '\r' && *(s1 + 1) == '\n') || *s1 == '\n') && (*s2 == '\0' || (*s2 == '\r' && *(s2 + 1) == '\n') || *s2 == '\n')) {
             break;
         }
         if (*s1 != *s2) {
@@ -37,7 +37,7 @@ request_analysis_result_t try_analyze_req_line(request_analysis_data_t *data) {
         cursor += 4;
         data->cacheable = false;
     }
-    else if (*(cursor + strcspn(cursor, " \r")) == ' ') {
+    else if (*(cursor + strcspn(cursor, " \n")) == ' ') {
         return METHOD_NOT_IMPLEMENTED;
     }
     else {
@@ -45,7 +45,7 @@ request_analysis_result_t try_analyze_req_line(request_analysis_data_t *data) {
     }
 
     cursor += strspn(cursor, " ");
-    if (*cursor == '\r' && *(cursor + 1) == '\n') {
+    if (*cursor == '\r' || *cursor == '\n') {
         return MALFORMED;
     }
 
@@ -56,7 +56,7 @@ request_analysis_result_t try_analyze_req_line(request_analysis_data_t *data) {
     cursor += 7;
 
     char *hostname = cursor;
-    size_t hostname_size = strcspn(cursor, ":/ \r");
+    size_t hostname_size = strcspn(cursor, ":/ \n");
     char *port = NULL;
     char *path = NULL;
     size_t port_size = 0, path_size = 0;
@@ -68,12 +68,16 @@ request_analysis_result_t try_analyze_req_line(request_analysis_data_t *data) {
         port_size = strspn(cursor, "0123456789");
         cursor += port_size;
     }
+
+    if (*cursor == '\r' || *cursor == '\n') {
+        return MALFORMED;
+    }
     path = cursor;
-    path_size = strcspn(cursor, " \r");
+    path_size = strcspn(cursor, " \n");
     cursor += path_size;
     cursor += strspn(cursor, " ");
 
-    if (*cursor == '\r' && *(cursor + 1) == '\n') {
+    if (*cursor == '\r' || *cursor == '\n') {
         return MALFORMED;
     }
 
@@ -88,17 +92,19 @@ request_analysis_result_t try_analyze_req_line(request_analysis_data_t *data) {
         return MALFORMED;
     }
 
-    if (*cursor != ' ' && !(*cursor == '\r' && *(cursor + 1) == '\n')) {
+    if (*cursor != ' ' && !(*cursor == '\r' && *(cursor + 1) == '\n') && *cursor != '\n') {
         return MALFORMED;
     }
 
     cursor += strspn(cursor, " ");
-    if (!(*cursor == '\r' && *(cursor + 1) == '\n')) {
+    if (!(*cursor == '\r' && *(cursor + 1) == '\n') && *cursor != '\n') {
         return MALFORMED;
     }
     
     // Placing cursor right on the LF
-    cursor++;
+    if (*cursor == '\r') {
+        cursor++;
+    }
     data->analyzed = cursor -(data->data.arr + data->analyzed);
 
     data->uri.buffer = malloc(hostname_size + 1 + port_size + 1 + path_size + 1);
