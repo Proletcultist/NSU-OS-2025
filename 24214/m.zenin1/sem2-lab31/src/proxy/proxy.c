@@ -11,23 +11,16 @@
 #include "proxy/request_analysis.h"
 #include "proxy/responses.h"
 
-#define MAX_LINE_LENGTH 256
+#define MAX_LINE_SIZE (8 * 1024)        // 8KB
+#define MAX_HEADERS_SIZE (64 * 1024)    // 64KB
 
 typedef struct request_analysis_task {
     task_t task;
     char client_ip[16];
+    bool cacheable;
+    size_t content_size;
     request_analysis_data_t analysis_data;
 } request_analysis_task_t;
-
-static char* findEOL(char *buff, size_t size) {
-    for (size_t i = 0; i < size; i++) {
-        if (buff[i] == '\n') {
-            return buff + i;
-        }
-    }
-
-    return NULL;
-}
 
 static void write_response_callback(ssize_t r, int errno, void *udata) {
     task_t *task = udata;
@@ -44,7 +37,21 @@ static void write_response_callback(ssize_t r, int errno, void *udata) {
     free(task);
 }
 
-static void read_req_line_callback(ssize_t r, int errno, void *udata) {
+static void schedule_write_response(int fd, char *msg, size_t msg_size) {
+    task_t *write_error_task = malloc(sizeof(task_t));
+    *write_error_task = (task_t)
+                        {
+                            .type = WRITE_REQUEST,
+                            .fd = fd,
+                            .buffer = msg,
+                            .size = msg_size,
+                            .data = write_error_task,
+                            .callback = write_response_callback
+                        };
+    aio_scheduler_schedule(write_error_task);
+}
+
+static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata) {
     request_analysis_task_t *task = udata;
 
     // Check for errors or connection closed
@@ -65,9 +72,60 @@ static void read_req_line_callback(ssize_t r, int errno, void *udata) {
         return;
     }
 
-    char *eol = findEOL(task->analysis_data.data.arr + task->analysis_data.data.size, (size_t) r);
-    // Adjust size and enlarge buffer if needed
+    char *eol = memchr(task->analysis_data.data.arr + task->analysis_data.data.size, '\n', (size_t) r);
+
+    // No EOL found and max line size exceeded
+    if (eol == NULL && task->analysis_data.data.size - task->analysis_data.analyzed >= MAX_LINE_SIZE) {
+        request_analysis_data_t_destruct(&task->analysis_data);
+        schedule_write_response(task->task.fd, too_long_line_response, too_long_line_response_size);
+        free(task);
+        return;
+    }
+    while (eol != NULL) {
+        try_analyze_next_line(&task->analysis_data);
+
+        switch (task->analysis_data.state) {
+            case MALFORMED:
+                request_analysis_data_t_destruct(&task->analysis_data);
+                schedule_write_response(task->task.fd, bad_request_response, bad_request_response_size);
+                free(task);
+                return;
+            case READ_REQUEST_LINE:
+                fprintf(stderr, "[Info] %s Parsed hostname: \"%s\" port: \"%s\", path: \"%s\"\n", task->client_ip, task->analysis_data.uri.hostname, task->analysis_data.uri.port, task->analysis_data.uri.path);
+                switch (task->analysis_data.method) {
+                    case GET:
+                        task->cacheable = true;
+                        break;
+                    case POST:
+                    case HEAD:
+                        task->cacheable = false;
+                        break;
+                    case UNKNOWN_METHOD:
+                        request_analysis_data_t_destruct(&task->analysis_data);
+                        schedule_write_response(task->task.fd, method_not_implemented_response, method_not_implemented_response_size);
+                        free(task);
+                        return;
+                }
+                if (task->analysis_data.version != HTTP_1_0) {
+                    request_analysis_data_t_destruct(&task->analysis_data);
+                    schedule_write_response(task->task.fd, version_not_supported_response, version_not_supported_response_size);
+                    free(task);
+                    return;
+                }
+                break;
+            case HEADER_AVAILABLE:
+                // TODO: Do smth with header
+                break;
+            case COMPLETE:
+                // TODO: Open connection with server, schedule writing to it
+                return;
+
+        }
+
+        eol = memchr(eol + 1, '\n', (size_t) r - (size_t) (eol - (task->analysis_data.data.arr + task->analysis_data.data.size)) - 1);
+    }
     task->analysis_data.data.size += (size_t) r;
+
 
     printf("\nBuffer content:\n");
     printf("\033[32m");
@@ -80,75 +138,10 @@ static void read_req_line_callback(ssize_t r, int errno, void *udata) {
     }
     printf("\n");
 
-    // No EOL found and max line size exceeded
-    if (eol == NULL && task->analysis_data.data.size - task->analysis_data.analyzed >= MAX_LINE_LENGTH) {
-        request_analysis_data_t_destruct(&task->analysis_data);
-
-        task_t *write_error_task = malloc(sizeof(task_t));
-        *write_error_task = (task_t)
-                            {
-                                .type = WRITE_REQUEST,
-                                .fd = task->task.fd,
-                                .buffer = too_long_line_response,
-                                .size = too_long_line_response_size,
-                                .data = write_error_task,
-                                .callback = write_response_callback
-                            };
-        aio_scheduler_schedule(write_error_task);
-
-        free(task);
-        return;
-    }
-    else if (eol != NULL) {
-        request_analysis_result_t res = try_analyze_next_line(&task->analysis_data);
-        switch (res) {
-            case METHOD_NOT_IMPLEMENTED:
-            case VERSION_NOT_SUPPORTED:
-            case MALFORMED:
-                request_analysis_data_t_destruct(&task->analysis_data);
-
-                char *msg;
-                size_t msg_size;
-                switch (res) {
-                    case METHOD_NOT_IMPLEMENTED:
-                        msg = method_not_implemented_response;
-                        msg_size = method_not_implemented_response_size;
-                        break;
-                    case VERSION_NOT_SUPPORTED:
-                        msg = version_not_supported_response;
-                        msg_size = version_not_supported_response_size;
-                        break;
-                    case MALFORMED:
-                        msg = bad_request_response;
-                        msg_size = bad_request_response_size;
-                        break;
-                }
-
-                task_t *write_error_task = malloc(sizeof(task_t));
-                *write_error_task = (task_t)
-                                    {
-                                        .type = WRITE_REQUEST,
-                                        .fd = task->task.fd,
-                                        .buffer = msg,
-                                        .size = msg_size,
-                                        .data = write_error_task,
-                                        .callback = write_response_callback
-                                    };
-                aio_scheduler_schedule(write_error_task);
-
-                free(task);
-                return;
-            case COMPLETE:
-                // TODO: Open connection with server, schedule writing to it
-                return;
-            case INCOMPLETE:
-        }
-    }
 
     if (task->analysis_data.data.size == task->analysis_data.data.cap) {
-        vector_char_t_reserve(&task->analysis_data.data, task->analysis_data.data.cap + MAX_LINE_LENGTH);
+        vector_char_t_reserve(&task->analysis_data.data, task->analysis_data.data.cap + MAX_LINE_SIZE);
     }
-
     task->task = (task_t)
                  {
                      .type = READ_REQUEST,
@@ -156,9 +149,8 @@ static void read_req_line_callback(ssize_t r, int errno, void *udata) {
                      .buffer = task->analysis_data.data.arr + task->analysis_data.data.size,
                      .size = task->analysis_data.data.cap - task->analysis_data.data.size,
                      .data = task,
-                     .callback = read_req_line_callback
+                     .callback = read_req_line_and_headers_callback
                  };
-
     aio_scheduler_schedule((task_t*) task);
 }
 
@@ -180,7 +172,7 @@ static void accept_connection(ssize_t r, int errno, void *udata) {
     }
 
     read_req_task->analysis_data = REQUEST_ANALYSIS_DATA_INITIALIZER;
-    vector_char_t_reserve(&read_req_task->analysis_data.data, MAX_LINE_LENGTH);
+    vector_char_t_reserve(&read_req_task->analysis_data.data, MAX_LINE_SIZE);
 
     read_req_task->task = (task_t)
                           {
@@ -189,7 +181,7 @@ static void accept_connection(ssize_t r, int errno, void *udata) {
                               .buffer = read_req_task->analysis_data.data.arr,
                               .size = read_req_task->analysis_data.data.cap,
                               .data = read_req_task,
-                              .callback = read_req_line_callback
+                              .callback = read_req_line_and_headers_callback
                           };
 
     aio_scheduler_schedule((task_t*) read_req_task);

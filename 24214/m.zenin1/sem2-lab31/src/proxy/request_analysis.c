@@ -1,14 +1,19 @@
-#include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
 #include "proxy/request_analysis.h"
 
+#define istspecial(c) ((c) == '(' || (c) == ')' || (c) ==  '<' || (c) == '>' || (c) == '@' || \
+                       (c) == ',' || (c) == ';' || (c) == ':' || (c) == '\\' || (c) == '"' || \
+                       (c) == '/' || (c) == '[' || (c) == ']' || (c) == '?' || (c) == '=' || \
+                       (c) == '{' || (c) ==  '}' || (c) == ' ' || (c) == '\t')
+
 // strncmp but for http lines
-// \0 and \r\n are considered as line ends
+// \0, \r\n and \n are considered as line ends
 static bool linencmp(char *s1, char *s2, size_t n) {
     while (n --> 0) {
-        if ((*s1 == '\0' || (*s1 == '\r' && *(s1 + 1) == '\n') || *s1 == '\n') && (*s2 == '\0' || (*s2 == '\r' && *(s2 + 1) == '\n') || *s2 == '\n')) {
+        if ((*s1 == '\0' || (*s1 == '\r' && *(s1 + 1) == '\n') || *s1 == '\n') &&
+            (*s2 == '\0' || (*s2 == '\r' && *(s2 + 1) == '\n') || *s2 == '\n')) {
             break;
         }
         if (*s1 != *s2) {
@@ -21,37 +26,46 @@ static bool linencmp(char *s1, char *s2, size_t n) {
     return true;
 }
 
-request_analysis_result_t try_analyze_req_line(request_analysis_data_t *data) {
+void try_analyze_req_line(request_analysis_data_t *data) {
     char *cursor = data->data.arr + data->analyzed;
 
     // Checking method
     if (linencmp(cursor, "GET ", 4)) {
         cursor += 3;
-        data->cacheable = true;
+        data->method = GET;
     }
     else if (linencmp(cursor, "POST ", 5)) {
         cursor += 4;
-        data->cacheable = false;
+        data->method = POST;
     }
     else if (linencmp(cursor, "HEAD ", 5)) {
         cursor += 4;
-        data->cacheable = false;
-    }
-    else if (*(cursor + strcspn(cursor, " \n")) == ' ') {
-        return METHOD_NOT_IMPLEMENTED;
+        data->method = HEAD;
     }
     else {
-        return MALFORMED;
+        if (istspecial(*cursor) || *cursor == '\n' || *cursor == '\r') {
+            data->state = MALFORMED;
+            return;
+        }
+        size_t space_dist = strcspn(cursor, " \r\n");
+        cursor += space_dist;
+        if (*cursor != ' ') {
+            data->state = MALFORMED;
+            return;
+        }
+        data->method = UNKNOWN_METHOD;
     }
 
     cursor += strspn(cursor, " ");
     if (*cursor == '\r' || *cursor == '\n') {
-        return MALFORMED;
+        data->state = MALFORMED;
+        return;
     }
 
     // Parsing URI into hostname and port
     if (!linencmp(cursor, "http://", 7)) {
-        return MALFORMED;
+        data->state = MALFORMED;
+        return;
     }
     cursor += 7;
 
@@ -70,7 +84,8 @@ request_analysis_result_t try_analyze_req_line(request_analysis_data_t *data) {
     }
 
     if (*cursor == '\r' || *cursor == '\n') {
-        return MALFORMED;
+        data->state = MALFORMED;
+        return;
     }
     path = cursor;
     path_size = strcspn(cursor, " \n");
@@ -78,27 +93,33 @@ request_analysis_result_t try_analyze_req_line(request_analysis_data_t *data) {
     cursor += strspn(cursor, " ");
 
     if (*cursor == '\r' || *cursor == '\n') {
-        return MALFORMED;
+        data->state = MALFORMED;
+        return;
     }
 
     // Checking HTTP version
     if (linencmp(cursor, "HTTP/1.0", 8)) {
         cursor += 8;
+        data->version = HTTP_1_0;
     }
     else if (linencmp(cursor, "HTTP/1.1", 8)) {
-        return VERSION_NOT_SUPPORTED;
+        cursor += 8;
+        data->version = HTTP_1_1;
     }
     else {
-        return MALFORMED;
+        data->state = MALFORMED;
+        return;
     }
 
     if (*cursor != ' ' && !(*cursor == '\r' && *(cursor + 1) == '\n') && *cursor != '\n') {
-        return MALFORMED;
+        data->state = MALFORMED;
+        return;
     }
 
     cursor += strspn(cursor, " ");
     if (!(*cursor == '\r' && *(cursor + 1) == '\n') && *cursor != '\n') {
-        return MALFORMED;
+        data->state = MALFORMED;
+        return;
     }
     
     // Placing cursor right on the LF
@@ -121,22 +142,35 @@ request_analysis_result_t try_analyze_req_line(request_analysis_data_t *data) {
     memcpy(data->uri.buffer + hostname_size + 1 + port_size + 1, path, path_size);
     data->uri.buffer[hostname_size + 1 + port_size + 1 + path_size] = '\0';
 
-    fprintf(stderr, "[Info] Parsed hostname: \"%s\" port: \"%s\", path: \"%s\"\n", data->uri.hostname, data->uri.port, data->uri.path);
-
-    data->state = READING_HEADERS;
-    return INCOMPLETE;
+    data->state = READ_REQUEST_LINE;
 }
 
-request_analysis_result_t try_analyze_header(request_analysis_data_t *data) {
-    return INCOMPLETE;
+static void try_get_header(char **cursor, header_t *out) {
 }
 
-request_analysis_result_t try_analyze_next_line(request_analysis_data_t *data) {
+void try_analyze_header(request_analysis_data_t *data) {
+    char *cursor = data->data.arr + data->analyzed;
+    if ((*cursor == '\r' && *(cursor + 1) == '\n') || *cursor == '\n') {
+        data->state = MALFORMED;
+        return;
+    }
+    
+    size_t header_name_size = strcspn(cursor, ":\r");
+}
+
+void try_analyze_next_line(request_analysis_data_t *data) {
     switch (data->state) {
         case READING_REQUEST_LINE:
-            return try_analyze_req_line(data);
+            try_analyze_req_line(data);
+            break;
+        case READ_REQUEST_LINE:
         case READING_HEADERS:
-            return try_analyze_header(data);
+        case HEADER_AVAILABLE:
+            try_analyze_header(data);
+            break;
+        case MALFORMED:
+        case COMPLETE:
+            break;
     }
 }
 
