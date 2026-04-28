@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
-#include "proxy/request_analysis.h"
+#include "http.h"
 
 #define istspecial(c) ((c) == '(' || (c) == ')' || (c) ==  '<' || (c) == '>' || (c) == '@' || \
                        (c) == ',' || (c) == ';' || (c) == ':' || (c) == '\\' || (c) == '"' || \
@@ -26,45 +26,45 @@ static bool linencmp(char *s1, char *s2, size_t n) {
     return true;
 }
 
-void try_analyze_req_line(request_analysis_data_t *data) {
-    char *cursor = data->data.arr + data->analyzed;
+void analyze_req_line(http_state_machine_t *sm) {
+    char *cursor = sm->data.arr + sm->analyzed;
 
     // Checking method
     if (linencmp(cursor, "GET ", 4)) {
         cursor += 3;
-        data->method = GET;
+        sm->method = GET;
     }
     else if (linencmp(cursor, "POST ", 5)) {
         cursor += 4;
-        data->method = POST;
+        sm->method = POST;
     }
     else if (linencmp(cursor, "HEAD ", 5)) {
         cursor += 4;
-        data->method = HEAD;
+        sm->method = HEAD;
     }
     else {
         if (istspecial(*cursor) || *cursor == '\n' || *cursor == '\r') {
-            data->state = MALFORMED;
+            sm->state = MALFORMED;
             return;
         }
         size_t space_dist = strcspn(cursor, " \r\n");
         cursor += space_dist;
         if (*cursor != ' ') {
-            data->state = MALFORMED;
+            sm->state = MALFORMED;
             return;
         }
-        data->method = UNKNOWN_METHOD;
+        sm->method = UNKNOWN_METHOD;
     }
 
     cursor += strspn(cursor, " ");
     if (*cursor == '\r' || *cursor == '\n') {
-        data->state = MALFORMED;
+        sm->state = MALFORMED;
         return;
     }
 
     // Parsing URI into hostname and port
     if (!linencmp(cursor, "http://", 7)) {
-        data->state = MALFORMED;
+        sm->state = MALFORMED;
         return;
     }
     cursor += 7;
@@ -81,10 +81,14 @@ void try_analyze_req_line(request_analysis_data_t *data) {
         port = cursor;
         port_size = strspn(cursor, "0123456789");
         cursor += port_size;
+        if (*cursor != ' ' && *cursor != '/') {
+            sm->state = MALFORMED;
+            return;
+        }
     }
 
     if (*cursor == '\r' || *cursor == '\n') {
-        data->state = MALFORMED;
+        sm->state = MALFORMED;
         return;
     }
     path = cursor;
@@ -93,32 +97,32 @@ void try_analyze_req_line(request_analysis_data_t *data) {
     cursor += strspn(cursor, " ");
 
     if (*cursor == '\r' || *cursor == '\n') {
-        data->state = MALFORMED;
+        sm->state = MALFORMED;
         return;
     }
 
     // Checking HTTP version
     if (linencmp(cursor, "HTTP/1.0", 8)) {
         cursor += 8;
-        data->version = HTTP_1_0;
+        sm->version = HTTP_1_0;
     }
     else if (linencmp(cursor, "HTTP/1.1", 8)) {
         cursor += 8;
-        data->version = HTTP_1_1;
+        sm->version = HTTP_1_1;
     }
     else {
-        data->state = MALFORMED;
+        sm->state = MALFORMED;
         return;
     }
 
     if (*cursor != ' ' && !(*cursor == '\r' && *(cursor + 1) == '\n') && *cursor != '\n') {
-        data->state = MALFORMED;
+        sm->state = MALFORMED;
         return;
     }
 
     cursor += strspn(cursor, " ");
     if (!(*cursor == '\r' && *(cursor + 1) == '\n') && *cursor != '\n') {
-        data->state = MALFORMED;
+        sm->state = MALFORMED;
         return;
     }
     
@@ -126,47 +130,37 @@ void try_analyze_req_line(request_analysis_data_t *data) {
     if (*cursor == '\r') {
         cursor++;
     }
-    data->analyzed = cursor -(data->data.arr + data->analyzed);
+    sm->analyzed = cursor -(sm->data.arr + sm->analyzed);
 
-    data->uri.buffer = malloc(hostname_size + 1 + port_size + 1 + path_size + 1);
+    sm->uri.buffer = malloc(hostname_size + 1 + port_size + 1 + path_size + 1);
 
-    data->uri.hostname = data->uri.buffer;
-    memcpy(data->uri.buffer, hostname, hostname_size);
-    data->uri.buffer[hostname_size] = '\0';
+    sm->uri.hostname = sm->uri.buffer;
+    memcpy(sm->uri.buffer, hostname, hostname_size);
+    sm->uri.buffer[hostname_size] = '\0';
 
-    data->uri.port = data->uri.buffer + hostname_size + 1;
-    memcpy(data->uri.buffer + hostname_size + 1, port, port_size);
-    data->uri.buffer[hostname_size + 1 + port_size] = '\0';
+    sm->uri.port = sm->uri.buffer + hostname_size + 1;
+    memcpy(sm->uri.buffer + hostname_size + 1, port, port_size);
+    sm->uri.buffer[hostname_size + 1 + port_size] = '\0';
 
-    data->uri.path = data->uri.buffer + hostname_size + 1 + port_size + 1;
-    memcpy(data->uri.buffer + hostname_size + 1 + port_size + 1, path, path_size);
-    data->uri.buffer[hostname_size + 1 + port_size + 1 + path_size] = '\0';
+    sm->uri.path = sm->uri.buffer + hostname_size + 1 + port_size + 1;
+    memcpy(sm->uri.buffer + hostname_size + 1 + port_size + 1, path, path_size);
+    sm->uri.buffer[hostname_size + 1 + port_size + 1 + path_size] = '\0';
 
-    data->state = READ_REQUEST_LINE;
+    sm->state = READ_REQUEST_LINE;
 }
 
-static void try_get_header(char **cursor, header_t *out) {
+void analyze_header(http_state_machine_t *sm) {
 }
 
-void try_analyze_header(request_analysis_data_t *data) {
-    char *cursor = data->data.arr + data->analyzed;
-    if ((*cursor == '\r' && *(cursor + 1) == '\n') || *cursor == '\n') {
-        data->state = MALFORMED;
-        return;
-    }
-    
-    size_t header_name_size = strcspn(cursor, ":\r");
-}
-
-void try_analyze_next_line(request_analysis_data_t *data) {
-    switch (data->state) {
+void http_state_machine_analyze_next_line(http_state_machine_t *sm) {
+    switch (sm->state) {
         case READING_REQUEST_LINE:
-            try_analyze_req_line(data);
+            analyze_req_line(sm);
             break;
         case READ_REQUEST_LINE:
         case READING_HEADERS:
         case HEADER_AVAILABLE:
-            try_analyze_header(data);
+            analyze_header(sm);
             break;
         case MALFORMED:
         case COMPLETE:
@@ -174,9 +168,9 @@ void try_analyze_next_line(request_analysis_data_t *data) {
     }
 }
 
-void request_analysis_data_t_destruct(request_analysis_data_t *data) {
-    if (data->uri.buffer != NULL) {
-        free(data->uri.buffer);
+void http_state_machine_destruct(http_state_machine_t *sm) {
+    if (sm->uri.buffer != NULL) {
+        free(sm->uri.buffer);
     }
-    vector_char_t_destruct(&data->data);
+    vector_char_t_destruct(&sm->data);
 }
