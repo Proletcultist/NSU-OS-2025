@@ -13,6 +13,7 @@
 #define HTTP_STATE_MACHINE_INITIALIZER ((http_state_machine_t) \
                                         { \
                                          .state = READING_REQUEST_LINE, \
+                                         .available_lines = 0, \
                                          .analyzed = 0, \
                                          .data = (vector_char_t) VECTOR_INITIALIZER \
                                         })
@@ -57,9 +58,12 @@ typedef struct http_state_machine {
     http_version_t version;
     header_t last_header;
 
+    size_t available_lines;
     size_t analyzed;
     vector_char_t data;
 } http_state_machine_t;
 
-void http_state_machine_analyze_next_line(http_state_machine_t *data);
-void http_state_machine_destruct(http_state_machine_t *data);
+void http_state_machine_alloc(http_state_machine_t *sm, void **buffer, size_t *size);
+void http_state_machine_feed(http_state_machine_t *sm, size_t size);
+bool http_state_machine_step(http_state_machine_t *sm);
+void http_state_machine_destruct(http_state_machine_t *sm);

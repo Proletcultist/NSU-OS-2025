@@ -4,6 +4,8 @@
 #include <string.h>
 #include "http.h"
 
+#define MIN_CHUNK_SIZE 128
+
 #define istspecial(c) ((c) == '(' || (c) == ')' || (c) ==  '<' || (c) == '>' || (c) == '@' || \
                        (c) == ',' || (c) == ';' || (c) == ':' || (c) == '\\' || (c) == '"' || \
                        (c) == '/' || (c) == '[' || (c) == ']' || (c) == '?' || (c) == '=' || \
@@ -293,7 +295,23 @@ void analyze_req_line(http_state_machine_t *sm) {
 void analyze_header(http_state_machine_t *sm) {
 }
 
-void http_state_machine_analyze_next_line(http_state_machine_t *sm) {
+void http_state_machine_alloc(http_state_machine_t *sm, void **buffer, size_t *size) {
+    vector_char_t_reserve(&sm->data, sm->data.cap + MIN_CHUNK_SIZE);
+    *buffer = sm->data.arr + sm->data.size;
+    *size = sm->data.cap - sm->data.size;
+}
+
+void http_state_machine_feed(http_state_machine_t *sm, size_t size) {
+    char *eol = memchr(sm->data.arr + sm->data.size, '\n', size);
+
+    while (eol != NULL) {
+        sm->available_lines++;
+        eol = memchr(eol + 1, '\n', size - (size_t) (eol - (sm->data.arr + sm->data.size)) - 1);
+    }
+    sm->data.size += size;
+}
+
+static void http_state_machine_analyze_next_line(http_state_machine_t *sm) {
     switch (sm->state) {
         case READING_REQUEST_LINE:
             analyze_req_line(sm);
@@ -307,6 +325,16 @@ void http_state_machine_analyze_next_line(http_state_machine_t *sm) {
         case COMPLETE:
             break;
     }
+}
+
+bool http_state_machine_step(http_state_machine_t *sm) {
+    if (sm->available_lines == 0) {
+        return false;
+    }
+    
+    http_state_machine_analyze_next_line(sm);
+
+    sm->available_lines--;
 }
 
 void http_state_machine_destruct(http_state_machine_t *sm) {

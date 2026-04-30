@@ -11,12 +11,12 @@
 #include "http.h"
 #include "proxy/responses.h"
 
-#define MAX_LINE_SIZE (8 * 1024)        // 8KB
 #define MAX_HEADERS_SIZE (64 * 1024)    // 64KB
 
 typedef struct request_analysis_task {
     task_t task;
     char client_ip[16];
+    size_t bytes_received;
     bool cacheable;
     size_t content_size;
     http_state_machine_t sm;
@@ -72,18 +72,13 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
         return;
     }
 
-    char *eol = memchr(task->sm.data.arr + task->sm.data.size, '\n', (size_t) r);
-
-    // No EOL found and max line size exceeded
-    if (eol == NULL && task->sm.data.size - task->sm.analyzed >= MAX_LINE_SIZE) {
-        http_state_machine_destruct(&task->sm);
-        schedule_write_response(task->task.fd, too_long_line_response, too_long_line_response_size);
-        free(task);
-        return;
+    task->bytes_received += (size_t) r;
+    if (task->bytes_received > MAX_HEADERS_SIZE) {
+        // TODO: Send error
     }
-    while (eol != NULL) {
-        http_state_machine_analyze_next_line(&task->sm);
 
+    http_state_machine_feed(&task->sm, (size_t) r);
+    while (http_state_machine_step(&task->sm)) {
         switch (task->sm.state) {
             case MALFORMED:
                 http_state_machine_destruct(&task->sm);
@@ -123,11 +118,7 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
             case READING_HEADERS:
                 break;
         }
-
-        eol = memchr(eol + 1, '\n', (size_t) r - (size_t) (eol - (task->sm.data.arr + task->sm.data.size)) - 1);
     }
-    task->sm.data.size += (size_t) r;
-
 
     printf("\nBuffer content:\n");
     printf("\033[32m");
@@ -141,15 +132,15 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
     printf("\n");
 
 
-    if (task->sm.data.size == task->sm.data.cap) {
-        vector_char_t_reserve(&task->sm.data, task->sm.data.cap + MAX_LINE_SIZE);
-    }
+    void *buffer;
+    size_t size;
+    http_state_machine_alloc(&task->sm, &buffer, &size);
     task->task = (task_t)
                  {
                      .type = READ_REQUEST,
                      .fd = task->task.fd,
-                     .buffer = task->sm.data.arr + task->sm.data.size,
-                     .size = task->sm.data.cap - task->sm.data.size,
+                     .buffer = buffer,
+                     .size = size,
                      .data = task,
                      .callback = read_req_line_and_headers_callback
                  };
@@ -174,14 +165,16 @@ static void accept_connection(ssize_t r, int errno, void *udata) {
     }
 
     read_req_task->sm = HTTP_STATE_MACHINE_INITIALIZER;
-    vector_char_t_reserve(&read_req_task->sm.data, MAX_LINE_SIZE);
-
+    read_req_task->bytes_received = 0;
+    void *buffer;
+    size_t size;
+    http_state_machine_alloc(&read_req_task->sm, &buffer, &size);
     read_req_task->task = (task_t)
                           {
                               .type = READ_REQUEST,
                               .fd = fd,
-                              .buffer = read_req_task->sm.data.arr,
-                              .size = read_req_task->sm.data.cap,
+                              .buffer = buffer,
+                              .size = size,
                               .data = read_req_task,
                               .callback = read_req_line_and_headers_callback
                           };
