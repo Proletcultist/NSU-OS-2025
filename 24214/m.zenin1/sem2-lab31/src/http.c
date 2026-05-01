@@ -20,94 +20,94 @@
 
 #define ispchar(c) ((c) == ':' || (c) == '@' || (c) == '&' || (c) == '=' || (c) == '+' || isuchar(c))
 
-static bool skip_token(char **cursor, http_state_machine_t *sm) {
-    if (istspecial(**cursor) || iscntrl(**cursor)) {
+static bool skip_token(http_state_machine_t *sm) {
+    if (istspecial(sm->data.arr[sm->analyzed]) || iscntrl(sm->data.arr[sm->analyzed])) {
         sm->state = MALFORMED;
         return false;
     }
-    while (!istspecial(**cursor) && !iscntrl(**cursor)) {
-        (*cursor)++;
+    while (!istspecial(sm->data.arr[sm->analyzed]) && !iscntrl(sm->data.arr[sm->analyzed])) {
+        sm->analyzed++;
     }
 
     return true;
 }
 
-static bool skip_word(char **cursor, http_state_machine_t *sm) {
-    if (**cursor == '"') {
+static bool skip_word(http_state_machine_t *sm) {
+    if (sm->data.arr[sm->analyzed] == '"') {
         // TODO: Quoted words
     }
-    else if (!skip_token(cursor, sm)) {
+    else if (!skip_token(sm)) {
         return false;
     }
 
     return true;
 }
 
-static bool skip_hostname(char **cursor, http_state_machine_t *sm) {
+static bool skip_hostname(http_state_machine_t *sm) {
     while (true) {
-        if (!isalnum(**cursor)) {
+        if (!isalnum(sm->data.arr[sm->analyzed])) {
             sm->state = MALFORMED;
             return false;
         }
-        while (isalnum(**cursor) || **cursor == '-') {
-            (*cursor)++;
+        while (isalnum(sm->data.arr[sm->analyzed]) || sm->data.arr[sm->analyzed] == '-') {
+            sm->analyzed++;
         }
 
-        if (**cursor == '-') {
+        if (sm->data.arr[sm->analyzed] == '-') {
             sm->state = MALFORMED;
             return false;
         }
 
-        if (**cursor != '.') {
+        if (sm->data.arr[sm->analyzed] != '.') {
             break;
         }
 
-        (*cursor)++;
+        sm->analyzed++;
     }
 
     return true;
 }
 
-static bool skip_number(char **cursor, http_state_machine_t *sm) {
-    if (!isdigit(**cursor)) {
+static bool skip_number(http_state_machine_t *sm) {
+    if (!isdigit(sm->data.arr[sm->analyzed])) {
         sm->state = MALFORMED;
         return false;
     }
-    while (isdigit(**cursor)) {
-        (*cursor)++;
+    while (isdigit(sm->data.arr[sm->analyzed])) {
+        sm->analyzed++;
     }
 
     return true;
 }
 
-static bool skip_abs_path(char **cursor, http_state_machine_t *sm) {
+static bool skip_abs_path(http_state_machine_t *sm) {
     // Slash at the beginning
-    if (**cursor != '/') {
+    if (sm->data.arr[sm->analyzed] != '/') {
         sm->state = MALFORMED;
         return false;
     }
-    (*cursor)++;
+    sm->analyzed++;
 
     // Path
-    if (ispchar(**cursor)) {
-        while (ispchar(**cursor) || **cursor == '/') {
-            (*cursor)++;
+    if (ispchar(sm->data.arr[sm->analyzed])) {
+        while (ispchar(sm->data.arr[sm->analyzed]) || sm->data.arr[sm->analyzed] == '/') {
+            sm->analyzed++;
         }
     }
 
     // Params
-    if (**cursor == ';') {
-        (*cursor)++;
-        while (ispchar(**cursor) || **cursor == '/' || **cursor == ';') {
-            (*cursor)++;
+    if (sm->data.arr[sm->analyzed] == ';') {
+        sm->analyzed++;
+        while (ispchar(sm->data.arr[sm->analyzed]) || sm->data.arr[sm->analyzed] == '/' || sm->data.arr[sm->analyzed] == ';') {
+            sm->analyzed++;
         }
     }
 
     // Query
-    if (**cursor == '?') {
-        (*cursor)++;
-        while (isuchar(**cursor) || isreserved(**cursor)) {
-            (*cursor)++;
+    if (sm->data.arr[sm->analyzed] == '?') {
+        sm->analyzed++;
+        while (isuchar(sm->data.arr[sm->analyzed]) || isreserved(sm->data.arr[sm->analyzed])) {
+            sm->analyzed++;
         }
     }
 
@@ -132,22 +132,22 @@ static bool linencmp(char *s1, char *s2, size_t n) {
     return true;
 }
 
-static bool analyze_method(char **cursor, http_state_machine_t *sm) {
+static bool analyze_method(http_state_machine_t *sm) {
     // Checking method
-    if (linencmp(*cursor, "GET ", 4)) {
-        (*cursor) += 3;
+    if (linencmp(sm->data.arr + sm->analyzed, "GET ", 4)) {
+        sm->analyzed += 3;
         sm->method = GET;
     }
-    else if (linencmp(*cursor, "POST ", 5)) {
-        (*cursor) += 4;
+    else if (linencmp(sm->data.arr + sm->analyzed, "POST ", 5)) {
+        sm->analyzed += 4;
         sm->method = POST;
     }
-    else if (linencmp(*cursor, "HEAD ", 5)) {
-        (*cursor) += 4;
+    else if (linencmp(sm->data.arr + sm->analyzed, "HEAD ", 5)) {
+        sm->analyzed += 4;
         sm->method = HEAD;
     }
     else {
-        if (!skip_word(cursor, sm)) {
+        if (!skip_word(sm)) {
             return false;
         }
         sm->method = UNKNOWN_METHOD;
@@ -156,54 +156,54 @@ static bool analyze_method(char **cursor, http_state_machine_t *sm) {
     return true;
 }
 
-static bool analyze_uri(char **cursor, http_state_machine_t *sm,
-                        char **hostname, size_t *hostname_size,
-                        char **port, size_t *port_size,
-                        char **path, size_t *path_size) {
+static bool analyze_uri(http_state_machine_t *sm,
+                        size_t *hostname_off, size_t *hostname_size,
+                        size_t *port_off, size_t *port_size,
+                        size_t *path_off, size_t *path_size) {
     *port_size = 0;
     *path_size = 0;
 
     // Parsing URI into hostname and port
-    if (!linencmp(*cursor, "http://", 7)) {
+    if (!linencmp(sm->data.arr + sm->analyzed, "http://", 7)) {
         sm->state = MALFORMED;
         return false;
     }
-    (*cursor) += 7;
+    sm->analyzed += 7;
 
-    *hostname = *cursor;
-    if (!skip_hostname(cursor, sm)) {
+    *hostname_off = sm->analyzed;
+    if (!skip_hostname(sm)) {
         return false;
     }
-    *hostname_size = (size_t) (*cursor - *hostname);
+    *hostname_size = sm->analyzed - *hostname_off;
 
-    if (**cursor == ':') {
-        (*cursor)++;
-        *port = *cursor;
-        if (!skip_number(cursor, sm)) {
+    if (sm->data.arr[sm->analyzed] == ':') {
+        sm->analyzed++;
+        *port_off = sm->analyzed;
+        if (!skip_number(sm)) {
             return false;
         }
-        *port_size = (size_t) (*cursor - *port);
+        *port_size = sm->analyzed - *port_off;
     }
 
-    if (**cursor == '/') {
-        *path = *cursor;
-        if (!skip_abs_path(cursor, sm)) {
+    if (sm->data.arr[sm->analyzed] == '/') {
+        *path_off = sm->analyzed;
+        if (!skip_abs_path(sm)) {
                 return false;
         }
-        *path_size = (size_t) (*cursor - *path);
+        *path_size = sm->analyzed - *path_off;
     }
 
     return true;
 }
 
-static bool analyze_version(char **cursor, http_state_machine_t *sm) {
+static bool analyze_version(http_state_machine_t *sm) {
     // Checking HTTP version
-    if (linencmp(*cursor, "HTTP/1.0", 8)) {
-        (*cursor) += 8;
+    if (linencmp(sm->data.arr + sm->analyzed, "HTTP/1.0", 8)) {
+        sm->analyzed += 8;
         sm->version = HTTP_1_0;
     }
-    else if (linencmp(*cursor, "HTTP/1.1", 8)) {
-        (*cursor) += 8;
+    else if (linencmp(sm->data.arr + sm->analyzed, "HTTP/1.1", 8)) {
+        sm->analyzed += 8;
         sm->version = HTTP_1_1;
     }
     else {
@@ -214,127 +214,126 @@ static bool analyze_version(char **cursor, http_state_machine_t *sm) {
     return true;
 }
 
-static bool skip_spaces(char **cursor, http_state_machine_t *sm) {
-    if (**cursor != ' ' && **cursor != '\t') {
+static bool skip_spaces(http_state_machine_t *sm) {
+    if (sm->data.arr[sm->analyzed] != ' ' && sm->data.arr[sm->analyzed] != '\t') {
         sm->state = MALFORMED;
         return false;
     }
-    while (**cursor == ' ' || **cursor == '\t') {
-        (*cursor)++;
+    while (sm->data.arr[sm->analyzed] == ' ' || sm->data.arr[sm->analyzed] == '\t') {
+        sm->analyzed++;
     }
 
     return true;
 }
 
-static bool skip_eol(char **cursor, http_state_machine_t *sm) {
-    if (**cursor == '\n') {
-        (*cursor)++;
+static bool skip_eol(http_state_machine_t *sm) {
+    if (sm->data.arr[sm->analyzed] == '\n') {
+        sm->analyzed++;
         return true;
     }
 
-    if (**cursor != '\r') {
+    if (sm->data.arr[sm->analyzed] != '\r') {
         sm->state = MALFORMED;
         return false;
     }
-    (*cursor)++;
+    sm->analyzed++;
 
-    if (**cursor != '\n') {
+    if (sm->data.arr[sm->analyzed] != '\n') {
         sm->state = MALFORMED;
         return false;
     }
-    (*cursor)++;
+    sm->analyzed++;
 
     return true;
 }
 
 static void analyze_req_line(http_state_machine_t *sm) {
-    char *cursor = sm->data.arr + sm->analyzed;
-
-    if (!analyze_method(&cursor, sm)) {
+    if (!analyze_method(sm)) {
         return;
     }
 
-    if (!skip_spaces(&cursor, sm)) {
+    if (!skip_spaces(sm)) {
         return;
     }
 
-    char *hostname, *port, *path;
-    size_t hostname_size, port_size, path_size;
-    if (!analyze_uri(&cursor, sm,
-                     &hostname, &hostname_size,
-                     &port, &port_size,
-                     &path, &path_size)) {
+    size_t hostname_off, hostname_size;
+    size_t port_off, port_size;
+    size_t path_off, path_size;
+    if (!analyze_uri(sm,
+                     &hostname_off, &hostname_size,
+                     &port_off, &port_size,
+                     &path_off, &path_size)) {
         return;
     }
 
-    if (!skip_spaces(&cursor, sm)) {
+    if (!skip_spaces(sm)) {
         return;
     }
 
-    if (!analyze_version(&cursor, sm)) {
+    if (!analyze_version(sm)) {
         return;
     }
 
-    if (!skip_spaces(&cursor, sm) && !skip_eol(&cursor, sm)) {
-        return;
+    if (sm->data.arr[sm->analyzed] == ' ' || sm->data.arr[sm->analyzed] == '\t') {
+        skip_spaces(sm);
     }
 
-    sm->analyzed = cursor - sm->data.arr;
+    if (!skip_eol(sm)) {
+        return;
+    }
 
     sm->uri.buffer = malloc(hostname_size + 1 + port_size + 1 + path_size + 1);
 
     sm->uri.hostname = sm->uri.buffer;
-    memcpy(sm->uri.buffer, hostname, hostname_size);
+    memcpy(sm->uri.buffer, sm->data.arr + hostname_off, hostname_size);
     sm->uri.buffer[hostname_size] = '\0';
 
     sm->uri.port = sm->uri.buffer + hostname_size + 1;
-    memcpy(sm->uri.buffer + hostname_size + 1, port, port_size);
+    memcpy(sm->uri.buffer + hostname_size + 1, sm->data.arr + port_off, port_size);
     sm->uri.buffer[hostname_size + 1 + port_size] = '\0';
 
     sm->uri.path = sm->uri.buffer + hostname_size + 1 + port_size + 1;
-    memcpy(sm->uri.buffer + hostname_size + 1 + port_size + 1, path, path_size);
+    memcpy(sm->uri.buffer + hostname_size + 1 + port_size + 1, sm->data.arr + path_off, path_size);
     sm->uri.buffer[hostname_size + 1 + port_size + 1 + path_size] = '\0';
 
     sm->state = READ_REQUEST_LINE;
     sm->available_lines--;
 }
 
-static bool skip_field_value(char **cursor, http_state_machine_t *sm) {
-    while (!iscntrl(**cursor)) {
-        (*cursor)++;
+static bool skip_field_value(http_state_machine_t *sm) {
+    while (!iscntrl(sm->data.arr[sm->analyzed])) {
+        sm->analyzed++;
     }
     return true;
 }
 
 static void analyze_header(http_state_machine_t *sm) {
-    char *cursor = sm->data.arr + sm->analyzed;
-
-    if (iscntrl(*cursor)) {
+    if (iscntrl(sm->data.arr[sm->analyzed])) {
         // If there is incomplete header - it's now complete, and can be accessed
         if (sm->state == READING_HEADER) {
             sm->state = HEADER_AVAILABLE;
             return;
         }
 
-        if (!skip_eol(&cursor, sm)) {
+        if (!skip_eol(sm)) {
             return;
         }
         sm->state = COMPLETE;
     }
-    else if (*cursor == ' ' || *cursor == '\t') {
+    else if (sm->data.arr[sm->analyzed] == ' ' || sm->data.arr[sm->analyzed] == '\t') {
         // If there is no incomplete header
         if (sm->state == READ_REQUEST_LINE || sm->state == HEADER_AVAILABLE) {
             sm->state = MALFORMED;
             return;
         }
         
-        if (!skip_field_value(&cursor, sm)) {
+        if (!skip_field_value(sm)) {
             return;
         }
 
-        sm->last_header.value_end = cursor;
+        sm->last_header.value_size = sm->analyzed - sm->last_header.value_off;
 
-        if (!skip_eol(&cursor, sm)) {
+        if (!skip_eol(sm)) {
             return;
         }
     }
@@ -345,36 +344,35 @@ static void analyze_header(http_state_machine_t *sm) {
             return;
         }
 
-        sm->last_header.name = cursor;
+        sm->last_header.name_off = sm->analyzed;
 
-        if (!skip_token(&cursor, sm)) {
+        if (!skip_token(sm)) {
             return;
         }
 
-        if (*cursor != ':') {
+        if (sm->data.arr[sm->analyzed] != ':') {
             sm->state = MALFORMED;
             return;
         }
 
-        sm->last_header.name_end = cursor;
-        cursor++;
+        sm->last_header.name_size = sm->analyzed - sm->last_header.name_off;
+        sm->analyzed++;
 
-        sm->last_header.value = cursor;
+        sm->last_header.value_off = sm->analyzed;
 
-        if (!skip_field_value(&cursor, sm)) {
+        if (!skip_field_value(sm)) {
             return;
         }
 
-        sm->last_header.value_end = cursor;
+        sm->last_header.value_size = sm->analyzed - sm->last_header.value_off;
 
-        if (!skip_eol(&cursor, sm)) {
+        if (!skip_eol(sm)) {
             return;
         }
         
         sm->state = READING_HEADER;
     }
 
-    sm->analyzed = cursor - sm->data.arr;
     sm->available_lines--;
 }
 
