@@ -23,7 +23,6 @@ typedef enum http_state_machine_state {
     READING_HEADER,
     HEADER_AVAILABLE,
     MALFORMED,
-    MALFORMED_COMPLETE,
     COMPLETE
 } http_state_machine_state_t;
 
