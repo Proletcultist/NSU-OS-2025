@@ -17,10 +17,42 @@ typedef struct request_analysis_task {
     task_t task;
     char client_ip[16];
     size_t bytes_received;
-    bool cacheable;
-    size_t content_size;
     http_state_machine_t sm;
 } request_analysis_task_t;
+
+typedef struct discard_request_task {
+    task_t task;
+    char client_ip[16];
+    size_t bytes_received;
+    char buffer[128];
+    char *msg;
+    size_t msg_size;
+} discard_request_task_t;
+
+static bool findDoubleEOL(char *buffer, size_t size) {
+    char *p = buffer;
+    char *end = buffer + size;
+
+    p = memchr(p, '\n', end - p);
+    while (p != NULL) {
+        // \n\n found
+        if (p > buffer && *(p - 1) == '\n') {
+            return true;
+        }
+        // \r\n\r\n found
+        else if (p >= buffer + 3 &&
+                 *(p - 1) == '\r' &&
+                 *(p - 2) == '\n' &&
+                 *(p - 3) == '\r') {
+            return true;
+        }
+
+        p++;
+        p = memchr(p, '\n', end - p);
+    }
+
+    return false;
+}
 
 static void write_response_callback(ssize_t r, int errno, void *udata) {
     task_t *task = udata;
@@ -49,6 +81,95 @@ static void schedule_write_response(int fd, char *msg, size_t msg_size) {
                             .callback = write_response_callback
                         };
     aio_scheduler_schedule(write_error_task);
+}
+
+static void discard_request_callback(ssize_t r, int errno, void *udata) {
+    discard_request_task_t *task = udata;
+
+    // Check for errors or connection closed
+    if (r < 0) {
+        fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->client_ip, strerror(errno));
+
+        close(task->task.fd);
+        free(task);
+        return;
+    }
+    else if (r == 0) {
+        fprintf(stderr, "[Error] Client %s terminated connection\n", task->client_ip);
+
+        close(task->task.fd);
+        free(task);
+        return;
+    }
+
+    task->bytes_received += (size_t) r;
+
+    size_t size = (size_t) r + (size_t) ((char*) task->task.buffer - task->buffer);
+    if (task->bytes_received > MAX_HEADERS_SIZE) {
+        // TODO: Send error
+    }
+    else if (findDoubleEOL(task->buffer, size)) {
+        schedule_write_response(task->task.fd, task->msg, task->msg_size);
+        free(task);
+    }
+    else {
+        // Copy last 3 bytes of not analyzed data in case double EOL starts there
+        size_t end_size = size > 3 ? 3 : size;
+
+        task->task = (task_t)
+                     {
+                         .type = READ_REQUEST,
+                         .fd = task->task.fd,
+                         .buffer = task->buffer + end_size,
+                         .size = sizeof(task->buffer) - end_size,
+                         .data = task,
+                         .callback = discard_request_callback
+                     };
+        memmove(task->buffer, task->buffer + size - end_size, end_size);
+        aio_scheduler_schedule((task_t*) task);
+    }
+}
+
+static void schedule_discard_req_and_write_response(request_analysis_task_t *atask, char *msg, size_t msg_size) {
+    char *data = atask->sm.data.arr + atask->sm.analyzed;
+    size_t data_size = atask->sm.data.size - atask->sm.analyzed;
+
+    if (atask->sm.analyzed > 0 && *(data - 1) == '\n') {
+        data--;
+        data_size++;
+    }
+    if (atask->sm.analyzed > 1 && *(data - 1) == '\r') {
+        data--;
+        data_size++;
+    }
+
+    if (findDoubleEOL(data, data_size)) {
+        schedule_write_response(atask->task.fd, msg, msg_size);
+    }
+    else {
+        discard_request_task_t *disc_task = malloc(sizeof(discard_request_task_t));
+        // Copy last 3 bytes of not analyzed data in case double EOL starts there
+        size_t end_size = data_size > 3 ? 3 : data_size;
+
+        *disc_task = (discard_request_task_t)
+                     {
+                        .task = (task_t)
+                                {
+                                    .type = READ_REQUEST,
+                                    .fd = atask->task.fd,
+                                    .buffer = disc_task->buffer + end_size,
+                                    .size = sizeof(disc_task->buffer) - end_size,
+                                    .data = disc_task,
+                                    .callback = discard_request_callback
+                                },
+                        .bytes_received = atask->bytes_received,
+                        .msg = msg,
+                        .msg_size = msg_size
+                     };
+        stpncpy(disc_task->client_ip, atask->client_ip, sizeof(disc_task->client_ip));
+        memcpy(disc_task->buffer, data + data_size - end_size, end_size);
+        aio_scheduler_schedule((task_t*) disc_task);
+    }
 }
 
 static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata) {
@@ -81,29 +202,30 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
     while (http_state_machine_step(&task->sm)) {
         switch (task->sm.state) {
             case MALFORMED:
+                schedule_discard_req_and_write_response(task, bad_request_response, bad_request_response_size);
                 http_state_machine_destruct(&task->sm);
-                schedule_write_response(task->task.fd, bad_request_response, bad_request_response_size);
                 free(task);
                 return;
             case READ_REQUEST_LINE:
                 fprintf(stderr, "[Info] %s Parsed hostname: \"%s\" port: \"%s\", path: \"%s\"\n", task->client_ip, task->sm.uri.hostname, task->sm.uri.port, task->sm.uri.path);
                 switch (task->sm.method) {
                     case GET:
-                        task->cacheable = true;
                         break;
                     case POST:
                     case HEAD:
-                        task->cacheable = false;
-                        break;
-                    case UNKNOWN_METHOD:
+                        schedule_discard_req_and_write_response(task, method_not_allowed, method_not_allowed_size);
                         http_state_machine_destruct(&task->sm);
-                        schedule_write_response(task->task.fd, method_not_implemented_response, method_not_implemented_response_size);
+                        free(task);
+                        return;
+                    case UNKNOWN_METHOD:
+                        schedule_discard_req_and_write_response(task, method_not_implemented_response, method_not_implemented_response_size);
+                        http_state_machine_destruct(&task->sm);
                         free(task);
                         return;
                 }
                 if (task->sm.version != HTTP_1_0) {
+                    schedule_discard_req_and_write_response(task, version_not_supported_response, version_not_supported_response_size);
                     http_state_machine_destruct(&task->sm);
-                    schedule_write_response(task->task.fd, version_not_supported_response, version_not_supported_response_size);
                     free(task);
                     return;
                 }
@@ -120,9 +242,6 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
                 }
                 fprintf(stderr, "\"\n");
                 break;
-            case MALFORMED_COMPLETE:
-                // TODO: Send error fr
-                return;
             case COMPLETE:
                 fprintf(stderr, "[Info] %s COMPLETE\n", task->client_ip);
                 // TODO: Open connection with server, schedule writing to it

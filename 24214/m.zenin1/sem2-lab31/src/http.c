@@ -403,8 +403,6 @@ static void http_state_machine_analyze_next_line(http_state_machine_t *sm) {
             analyze_header(sm);
             break;
         case MALFORMED:
-            break;
-        case MALFORMED_COMPLETE:
         case COMPLETE:
             break;
     }
