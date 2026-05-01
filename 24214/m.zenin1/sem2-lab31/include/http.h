@@ -20,9 +20,10 @@
 typedef enum http_state_machine_state {
     READING_REQUEST_LINE,
     READ_REQUEST_LINE,
-    READING_HEADERS,
+    READING_HEADER,
     HEADER_AVAILABLE,
     MALFORMED,
+    MALFORMED_COMPLETE,
     COMPLETE
 } http_state_machine_state_t;
 
@@ -34,9 +35,8 @@ typedef struct uri {
 } uri_t;
 
 typedef struct header {
-    char *name;
-    char *value;
-    size_t name_size, value_size;
+    char *name, *name_end;
+    char *value, *value_end;
 } header_t;
 
 typedef enum http_method {

@@ -20,18 +20,24 @@
 
 #define ispchar(c) ((c) == ':' || (c) == '@' || (c) == '&' || (c) == '=' || (c) == '+' || isuchar(c))
 
+static bool skip_token(char **cursor, http_state_machine_t *sm) {
+    if (istspecial(**cursor) || iscntrl(**cursor)) {
+        sm->state = MALFORMED;
+        return false;
+    }
+    while (!istspecial(**cursor) && !iscntrl(**cursor)) {
+        (*cursor)++;
+    }
+
+    return true;
+}
+
 static bool skip_word(char **cursor, http_state_machine_t *sm) {
     if (**cursor == '"') {
         // TODO: Quoted words
     }
-    else {
-        if (istspecial(**cursor) || iscntrl(**cursor)) {
-            sm->state = MALFORMED;
-            return false;
-        }
-        while (!istspecial(**cursor) && !iscntrl(**cursor)) {
-            (*cursor)++;
-        }
+    else if (!skip_token(cursor, sm)) {
+        return false;
     }
 
     return true;
@@ -209,11 +215,11 @@ static bool analyze_version(char **cursor, http_state_machine_t *sm) {
 }
 
 static bool skip_spaces(char **cursor, http_state_machine_t *sm) {
-    if (**cursor != ' ') {
+    if (**cursor != ' ' && **cursor != '\t') {
         sm->state = MALFORMED;
         return false;
     }
-    while (**cursor == ' ') {
+    while (**cursor == ' ' || **cursor == '\t') {
         (*cursor)++;
     }
 
@@ -241,7 +247,7 @@ static bool skip_eol(char **cursor, http_state_machine_t *sm) {
     return true;
 }
 
-void analyze_req_line(http_state_machine_t *sm) {
+static void analyze_req_line(http_state_machine_t *sm) {
     char *cursor = sm->data.arr + sm->analyzed;
 
     if (!analyze_method(&cursor, sm)) {
@@ -290,9 +296,86 @@ void analyze_req_line(http_state_machine_t *sm) {
     sm->uri.buffer[hostname_size + 1 + port_size + 1 + path_size] = '\0';
 
     sm->state = READ_REQUEST_LINE;
+    sm->available_lines--;
 }
 
-void analyze_header(http_state_machine_t *sm) {
+static bool skip_field_value(char **cursor, http_state_machine_t *sm) {
+    while (!iscntrl(**cursor)) {
+        (*cursor)++;
+    }
+    return true;
+}
+
+static void analyze_header(http_state_machine_t *sm) {
+    char *cursor = sm->data.arr + sm->analyzed;
+
+    if (iscntrl(*cursor)) {
+        // If there is incomplete header - it's now complete, and can be accessed
+        if (sm->state == READING_HEADER) {
+            sm->state = HEADER_AVAILABLE;
+            return;
+        }
+
+        if (!skip_eol(&cursor, sm)) {
+            return;
+        }
+        sm->state = COMPLETE;
+    }
+    else if (*cursor == ' ' || *cursor == '\t') {
+        // If there is no incomplete header
+        if (sm->state == READ_REQUEST_LINE || sm->state == HEADER_AVAILABLE) {
+            sm->state = MALFORMED;
+            return;
+        }
+        
+        if (!skip_field_value(&cursor, sm)) {
+            return;
+        }
+
+        sm->last_header.value_end = cursor;
+
+        if (!skip_eol(&cursor, sm)) {
+            return;
+        }
+    }
+    else {
+        // If there is incomplete header - it's now complete, and can be accessed
+        if (sm->state == READING_HEADER) {
+            sm->state = HEADER_AVAILABLE;
+            return;
+        }
+
+        sm->last_header.name = cursor;
+
+        if (!skip_token(&cursor, sm)) {
+            return;
+        }
+
+        if (*cursor != ':') {
+            sm->state = MALFORMED;
+            return;
+        }
+
+        sm->last_header.name_end = cursor;
+        cursor++;
+
+        sm->last_header.value = cursor;
+
+        if (!skip_field_value(&cursor, sm)) {
+            return;
+        }
+
+        sm->last_header.value_end = cursor;
+
+        if (!skip_eol(&cursor, sm)) {
+            return;
+        }
+        
+        sm->state = READING_HEADER;
+    }
+
+    sm->analyzed = cursor - sm->data.arr;
+    sm->available_lines--;
 }
 
 void http_state_machine_alloc(http_state_machine_t *sm, void **buffer, size_t *size) {
@@ -317,24 +400,26 @@ static void http_state_machine_analyze_next_line(http_state_machine_t *sm) {
             analyze_req_line(sm);
             break;
         case READ_REQUEST_LINE:
-        case READING_HEADERS:
+        case READING_HEADER:
         case HEADER_AVAILABLE:
             analyze_header(sm);
             break;
         case MALFORMED:
+            break;
+        case MALFORMED_COMPLETE:
         case COMPLETE:
             break;
     }
 }
 
 bool http_state_machine_step(http_state_machine_t *sm) {
-    if (sm->available_lines == 0) {
+    if (sm->available_lines == 0 || sm->state == MALFORMED || sm->state == COMPLETE) {
         return false;
     }
     
     http_state_machine_analyze_next_line(sm);
 
-    sm->available_lines--;
+    return true;
 }
 
 void http_state_machine_destruct(http_state_machine_t *sm) {

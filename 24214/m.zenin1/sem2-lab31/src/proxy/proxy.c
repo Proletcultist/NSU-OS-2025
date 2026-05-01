@@ -110,12 +110,25 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
                 break;
             case HEADER_AVAILABLE:
                 // TODO: Do smth with header
+                fprintf(stderr, "[Info] %s Field-name: \"", task->client_ip);
+                for (char *c = task->sm.last_header.name; c != task->sm.last_header.name_end; c++) {
+                    fprintf(stderr, "%c", *c);
+                }
+                fprintf(stderr, "\" Field-value: \"");
+                for (char *c = task->sm.last_header.value; c != task->sm.last_header.value_end; c++) {
+                    fprintf(stderr, "%c", *c);
+                }
+                fprintf(stderr, "\"\n");
                 break;
+            case MALFORMED_COMPLETE:
+                // TODO: Send error fr
+                return;
             case COMPLETE:
+                fprintf(stderr, "[Info] %s COMPLETE\n", task->client_ip);
                 // TODO: Open connection with server, schedule writing to it
                 return;
             case READING_REQUEST_LINE:
-            case READING_HEADERS:
+            case READING_HEADER:
                 break;
         }
     }
