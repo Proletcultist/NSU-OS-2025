@@ -111,12 +111,12 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
             case HEADER_AVAILABLE:
                 // TODO: Do smth with header
                 fprintf(stderr, "[Info] %s Field-name: \"", task->client_ip);
-                for (char *c = task->sm.last_header.name; c != task->sm.last_header.name_end; c++) {
-                    fprintf(stderr, "%c", *c);
+                for (size_t i = 0; i < task->sm.last_header.name_size; i++) {
+                    fprintf(stderr, "%c", task->sm.data.arr[task->sm.last_header.name_off + i]);
                 }
                 fprintf(stderr, "\" Field-value: \"");
-                for (char *c = task->sm.last_header.value; c != task->sm.last_header.value_end; c++) {
-                    fprintf(stderr, "%c", *c);
+                for (size_t i = 0; i < task->sm.last_header.value_size; i++) {
+                    fprintf(stderr, "%c", task->sm.data.arr[task->sm.last_header.value_off + i]);
                 }
                 fprintf(stderr, "\"\n");
                 break;

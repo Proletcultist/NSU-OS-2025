@@ -35,8 +35,8 @@ typedef struct uri {
 } uri_t;
 
 typedef struct header {
-    char *name, *name_end;
-    char *value, *value_end;
+    size_t name_off, name_size;
+    size_t value_off, value_size;
 } header_t;
 
 typedef enum http_method {
