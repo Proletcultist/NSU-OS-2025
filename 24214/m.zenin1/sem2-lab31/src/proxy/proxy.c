@@ -286,28 +286,32 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
                 else if (memcmp(name, "Connection", MIN(name_size, 10)) == 0) {
                     http_state_machine_delete_header(&task->sm, task->sm.last_header);
                 }
+                else if (memcmp(name, "Proxy-Connection", MIN(name_size, 16)) == 0) {
+                    http_state_machine_delete_header(&task->sm, task->sm.last_header);
+                }
                 break;
             case COMPLETE:
                 fprintf(stderr, "[Info] %s COMPLETE\n", task->client_ip);
+
+                http_state_machine_add_header(&task->sm, "Connection", 10, "close", 5);
                 // TODO: Open connection with server, schedule writing to it
+
+                printf("\nBuffer content:\n");
+                printf("\033[32m");
+                for (size_t i = 0; i < task->sm.analyzed; i++) {
+                    printf("%c", task->sm.data.arr[i]);
+                }
+                printf("\033[0m");
+                for (size_t i = task->sm.analyzed; i < task->sm.data.size; i++) {
+                    printf("%c", task->sm.data.arr[i]);
+                }
+                printf("\n");
                 return;
             case READING_REQUEST_LINE:
             case READING_HEADER:
                 break;
         }
     }
-
-    printf("\nBuffer content:\n");
-    printf("\033[32m");
-    for (size_t i = 0; i < task->sm.analyzed; i++) {
-        printf("%c", task->sm.data.arr[i]);
-    }
-    printf("\033[0m");
-    for (size_t i = task->sm.analyzed; i < task->sm.data.size; i++) {
-        printf("%c", task->sm.data.arr[i]);
-    }
-    printf("\n");
-
 
     void *buffer;
     size_t size;

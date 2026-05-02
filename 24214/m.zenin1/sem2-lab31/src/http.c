@@ -443,6 +443,27 @@ void http_state_machine_delete_header(http_state_machine_t *sm, header_t header)
 }
 
 void http_state_machine_add_header(http_state_machine_t *sm, char *name, size_t name_size, char *value, size_t value_size) {
+    if (sm->state != COMPLETE) {
+        return;
+    }
+
+    // Deleting LF from the end of data
+    sm->data.size--;
+    // If there is CR at the end, delete it too
+    if (sm->data.arr[sm->data.size - 1] == '\r') {
+        sm->data.size--;
+    }
+
+    // name + ": " + value + CRLFCRLF
+    vector_char_t_reserve(&sm->data, sm->data.cap + name_size + 2 + value_size + 4);
+    memcpy(sm->data.arr + sm->data.size, name, name_size);
+    sm->data.size += name_size;
+    memcpy(sm->data.arr + sm->data.size, ": ", 2);
+    sm->data.size += 2;
+    memcpy(sm->data.arr + sm->data.size, value, value_size);
+    sm->data.size += value_size;
+    memcpy(sm->data.arr + sm->data.size, "\r\n\r\n", 4);
+    sm->data.size += 4;
 }
 
 void http_state_machine_destruct(http_state_machine_t *sm) {
