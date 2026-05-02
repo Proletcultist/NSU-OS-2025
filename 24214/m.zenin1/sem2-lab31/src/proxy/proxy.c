@@ -284,17 +284,10 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
                     free(task);
                     return;
                 }
-                else if (memcmp(name, "Connection", MIN(name_size, 10)) == 0) {
-                    http_state_machine_delete_header(&task->sm, task->sm.last_header);
-                }
-                else if (memcmp(name, "Proxy-Connection", MIN(name_size, 16)) == 0) {
-                    http_state_machine_delete_header(&task->sm, task->sm.last_header);
-                }
                 break;
             case COMPLETE:
                 fprintf(stderr, "[Info] %s COMPLETE\n", task->client_ip);
 
-                http_state_machine_add_header(&task->sm, "Connection", 10, "close", 5);
                 cache_entry_t *entry = cache_lookup(task->sm.uri);
                 if (entry == NULL) {
                     fprintf(stderr, "No cache for u :(\n");
@@ -354,6 +347,7 @@ static void accept_connection(ssize_t r, int errno, void *udata) {
     }
 
     read_req_task->sm = HTTP_STATE_MACHINE_INITIALIZER;
+    read_req_task->sm.discarding = true;
     read_req_task->bytes_received = 0;
     void *buffer;
     size_t size;

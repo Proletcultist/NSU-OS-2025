@@ -4,7 +4,7 @@
 #include <string.h>
 #include "http.h"
 
-#define MIN_CHUNK_SIZE 128
+#define MIN_CHUNK_SIZE 64
 
 #define istspecial(c) ((c) == '(' || (c) == ')' || (c) ==  '<' || (c) == '>' || (c) == '@' || \
                        (c) == ',' || (c) == ';' || (c) == ':' || (c) == '\\' || (c) == '"' || \
@@ -376,7 +376,19 @@ static void analyze_header(http_state_machine_t *sm) {
 }
 
 void http_state_machine_alloc(http_state_machine_t *sm, void **buffer, size_t *size) {
-    vector_char_t_reserve(&sm->data, sm->data.cap + MIN_CHUNK_SIZE);
+    if (sm->discarding) {
+        size_t discard_size = sm->analyzed;
+        if (sm->state == READING_HEADER) {
+            discard_size = sm->last_header.name_off;
+        }
+        // Discard unneeded data
+        memmove(sm->data.arr, sm->data.arr + discard_size, sm->data.size - discard_size);
+        sm->data.size -= discard_size;
+        sm->analyzed -= discard_size;
+        sm->last_header.name_off -= discard_size;
+        sm->last_header.value_off -= discard_size;
+    }
+    vector_char_t_reserve(&sm->data, sm->data.size + MIN_CHUNK_SIZE);
     *buffer = sm->data.arr + sm->data.size;
     *size = sm->data.cap - sm->data.size;
 }
