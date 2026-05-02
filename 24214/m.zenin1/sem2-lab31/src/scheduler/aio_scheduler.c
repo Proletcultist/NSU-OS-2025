@@ -22,18 +22,13 @@ static inline void aio_delete_task(struct pollfd *pollfd, task_list_t *tasks, ta
     if (tasks->writes_amount == 0) {
         pollfd->events &= ~POLLOUT;
     }
-    if (tasks->reads_amount == 0 && tasks->writes_amount == 0) {
-        // TODO: Delete fd and descriptor
-        map_int_size_t_remove(&sched.fdToIndex, pollfd->fd);
-        pollfd->fd = -1;
-    }
 }
 
 static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t *tasks) {
     bool written = false;
     task_t *prev = tasks->first;
 
-    for (task_t *cursor = tasks->first->next; cursor != NULL;) {
+    for (task_t *cursor = tasks->first->next; cursor != NULL && pollfd->fd != -1;) {
         task_t *tmp = cursor->next;
 
         if (revents & POLLIN) {
@@ -41,6 +36,7 @@ static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t 
                 aio_delete_task(pollfd, tasks, prev, cursor);
 
                 cursor->callback(0, 0, cursor);
+                tmp = prev->next;
             }
             else if (cursor->type == READ_REQUEST) {
                 aio_delete_task(pollfd, tasks, prev, cursor);
@@ -48,20 +44,21 @@ static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t 
                 // Read and callback
                 ssize_t r = read(cursor->fd, cursor->buffer, cursor->size);
                 cursor->callback(r, errno, cursor->data);
+                tmp = prev->next;
             }
         }
         else if (revents & POLLOUT) {
             if (cursor->type == WRITE_REQUEST && !written) {
                 written = true;
                 ssize_t w = write(cursor->fd, cursor->buffer, cursor->size);
-                int tmp = errno;
 
                 if (w >= 0) {
                     cursor->written += (size_t) w;
                     if (cursor->written == cursor->size) {
                         // Write had completed
                         aio_delete_task(pollfd, tasks, prev, cursor);
-                        cursor->callback(cursor->written, tmp, cursor->data);
+                        cursor->callback(cursor->written, errno, cursor->data);
+                        tmp = prev->next;
                     }
                     else {
                         prev = cursor;
@@ -70,12 +67,18 @@ static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t 
                 else {
                     // Write had failed
                     aio_delete_task(pollfd, tasks, prev, cursor);
-                    cursor->callback(w, tmp, cursor->data);
+                    cursor->callback(w, errno, cursor->data);
+                    tmp = prev->next;
                 }
             }
         }
 
         cursor = tmp;
+    }
+
+    if (tasks->reads_amount == 0 && tasks->writes_amount == 0) {
+        map_int_size_t_remove(&sched.fdToIndex, pollfd->fd);
+        pollfd->fd = -1;
     }
 }
 
@@ -128,8 +131,30 @@ void aio_scheduler_proceed() {
         if (sched.fds.arr[i].revents & (POLLIN | POLLOUT)) {
             aio_proceed_tasks(&sched.fds.arr[i], sched.fds.arr[i].revents, &sched.task_lists.arr[i]);
         }
-        else if (sched.fds.arr[i].revents & (POLLHUP | POLLERR)) {
-            // TODO: Delete socket
+    }
+
+    // Cleanup deleted pollfds
+    for (size_t i = 0; i < sched.fds.size;) {
+        size_t index = sched.fds.size - i - 1;
+        if (sched.fds.arr[index].fd == -1){
+            // Just delete from the end
+            if (index == sched.fds.size - 1) {
+                task_list_destruct(&sched.task_lists.arr[index]);
+                sched.fds.size--;
+                sched.task_lists.size--;
+            }
+            // Copy last and then delete from the end
+            else {
+                task_list_destruct(&sched.task_lists.arr[index]);
+                sched.fds.arr[index] = sched.fds.arr[sched.fds.size - 1];
+                sched.task_lists.arr[index] = sched.task_lists.arr[sched.task_lists.size - 1];
+                map_int_size_t_set(&sched.fdToIndex, sched.fds.arr[index].fd, index);
+                sched.fds.size--;
+                sched.task_lists.size--;
+            }
+        }
+        else {
+            i++;
         }
     }
 }
