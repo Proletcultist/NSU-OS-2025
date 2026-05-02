@@ -10,6 +10,7 @@
 #include "scheduler/aio_scheduler.h"
 #include "http.h"
 #include "proxy/responses.h"
+#include "cache/cache.h"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX_HEADERS_SIZE (64 * 1024)    // 64KB
@@ -294,6 +295,13 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
                 fprintf(stderr, "[Info] %s COMPLETE\n", task->client_ip);
 
                 http_state_machine_add_header(&task->sm, "Connection", 10, "close", 5);
+                cache_entry_t *entry = cache_lookup(task->sm.uri);
+                if (entry == NULL) {
+                    fprintf(stderr, "No cache for u :(\n");
+                }
+                else {
+                    fprintf(stderr, "Wtf\n");
+                }
                 // TODO: Open connection with server, schedule writing to it
 
                 printf("\nBuffer content:\n");
