@@ -15,6 +15,7 @@
                                          .state = READING_REQUEST_LINE, \
                                          .available_lines = 0, \
                                          .analyzed = 0, \
+                                         .discarding = false, \
                                          .data = (vector_char_t) VECTOR_INITIALIZER \
                                         })
 typedef enum http_state_machine_state {
@@ -56,6 +57,8 @@ typedef struct http_state_machine {
     uri_t uri;
     http_version_t version;
     header_t last_header;
+
+    bool discarding;
 
     size_t available_lines;
     size_t analyzed;
