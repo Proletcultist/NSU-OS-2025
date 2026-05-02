@@ -66,3 +66,8 @@ void http_state_machine_alloc(http_state_machine_t *sm, void **buffer, size_t *s
 void http_state_machine_feed(http_state_machine_t *sm, size_t size);
 bool http_state_machine_step(http_state_machine_t *sm);
 void http_state_machine_destruct(http_state_machine_t *sm);
+
+void http_state_machine_get_header_name(http_state_machine_t *sm, header_t header, char **buff, size_t *size);
+void http_state_machine_get_header_value(http_state_machine_t *sm, header_t header, char **buff, size_t *size);
+void http_state_machine_delete_header(http_state_machine_t *sm, header_t header);
+void http_state_machine_add_header(http_state_machine_t *sm, char *name, size_t name_size, char *value, size_t value_size);

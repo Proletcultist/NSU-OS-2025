@@ -418,6 +418,33 @@ bool http_state_machine_step(http_state_machine_t *sm) {
     return true;
 }
 
+void http_state_machine_get_header_name(http_state_machine_t *sm, header_t header, char **buff, size_t *size) {
+    *buff = sm->data.arr + header.name_off;
+    *size = header.name_size;
+}
+
+void http_state_machine_get_header_value(http_state_machine_t *sm, header_t header, char **buff, size_t *size) {
+    *buff = sm->data.arr + header.value_off;
+    *size = header.value_size;
+}
+
+void http_state_machine_delete_header(http_state_machine_t *sm, header_t header) {
+    size_t header_size = (header.value_off + header.value_size) - header.name_off;
+    // Since header_t must be obtained only from state machine, there must be a LF or CRLF
+    if (sm->data.arr[header.name_off + header_size] == '\n') {
+        header_size++;
+    }
+    else if (sm->data.arr[header.name_off + header_size] == '\r') {
+        header_size += 2;
+    }
+
+    sm->analyzed -= header_size;
+    vector_char_t_erase(&sm->data, header.name_off, header_size);
+}
+
+void http_state_machine_add_header(http_state_machine_t *sm, char *name, size_t name_size, char *value, size_t value_size) {
+}
+
 void http_state_machine_destruct(http_state_machine_t *sm) {
     if (sm->uri.buffer != NULL) {
         free(sm->uri.buffer);
