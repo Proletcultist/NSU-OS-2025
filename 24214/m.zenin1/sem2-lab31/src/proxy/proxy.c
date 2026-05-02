@@ -14,6 +14,7 @@
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX_HEADERS_SIZE (64 * 1024)    // 64KB
+#define MAX_LINE_SIZE (8 * 1024)    // 8KB
 
 typedef struct request_analysis_task {
     task_t task;
@@ -107,7 +108,10 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
 
     task->bytes_received += (size_t) r;
     if (task->bytes_received > MAX_HEADERS_SIZE) {
-        // TODO: Send error
+        schedule_write_response(task->task.fd, bad_request_response, bad_request_response_size);
+        http_state_machine_destruct(&task->sm);
+        free(task);
+        return;
     }
 
     http_state_machine_feed(&task->sm, (size_t) r);
@@ -199,6 +203,14 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
             case READING_HEADER:
                 break;
         }
+    }
+
+    // Too big line
+    if (task->sm.data.size - task->sm.analyzed > MAX_LINE_SIZE) {
+        schedule_write_response(task->task.fd, bad_request_response, bad_request_response_size);
+        http_state_machine_destruct(&task->sm);
+        free(task);
+        return;
     }
 
     void *buffer;
