@@ -11,6 +11,7 @@
 #include "http.h"
 #include "proxy/responses.h"
 
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX_HEADERS_SIZE (64 * 1024)    // 64KB
 
 typedef struct request_analysis_task {
@@ -81,6 +82,35 @@ static void schedule_write_response(int fd, char *msg, size_t msg_size) {
                             .callback = write_response_callback
                         };
     aio_scheduler_schedule(write_error_task);
+}
+
+static bool mem_compare_trimed(char *a, size_t a_size, char *b, size_t b_size) {
+    while (a_size > 0 && (*a == ' ' || *a == '\t')) {
+        a++;
+        a_size--;
+    }
+    while (b_size > 0 && (*b == ' ' || *b == '\t')) {
+        b++;
+        b_size--;
+    }
+
+    size_t i = 0;
+    while (i < a_size && i < b_size && a[i] == b[i]) {
+        i++;
+    }
+
+    for (size_t j = i; j < a_size; j++) {
+        if (a[j] != ' ' && a[j] != '\t') {
+            return false;
+        }
+    }
+    for (size_t j = i; j < b_size; j++) {
+        if (b[j] != ' ' && b[j] != '\t') {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 static void discard_request_callback(ssize_t r, int errno, void *udata) {
@@ -209,8 +239,6 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
             case READ_REQUEST_LINE:
                 fprintf(stderr, "[Info] %s Parsed hostname: \"%s\" port: \"%s\", path: \"%s\"\n", task->client_ip, task->sm.uri.hostname, task->sm.uri.port, task->sm.uri.path);
                 switch (task->sm.method) {
-                    case GET:
-                        break;
                     case POST:
                     case HEAD:
                         schedule_discard_req_and_write_response(task, method_not_allowed, method_not_allowed_size);
@@ -222,6 +250,8 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
                         http_state_machine_destruct(&task->sm);
                         free(task);
                         return;
+                    case GET:
+                        break;
                 }
                 if (task->sm.version != HTTP_1_0) {
                     schedule_discard_req_and_write_response(task, version_not_supported_response, version_not_supported_response_size);
@@ -231,16 +261,31 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
                 }
                 break;
             case HEADER_AVAILABLE:
-                // TODO: Do smth with header
+                char *name, *value;
+                size_t name_size, value_size;
+                http_state_machine_get_header_name(&task->sm, task->sm.last_header, &name, &name_size);
+                http_state_machine_get_header_value(&task->sm, task->sm.last_header, &value, &value_size);
+
                 fprintf(stderr, "[Info] %s Field-name: \"", task->client_ip);
-                for (size_t i = 0; i < task->sm.last_header.name_size; i++) {
-                    fprintf(stderr, "%c", task->sm.data.arr[task->sm.last_header.name_off + i]);
+                for (size_t i = 0; i < name_size; i++) {
+                    fprintf(stderr, "%c", name[i]);
                 }
                 fprintf(stderr, "\" Field-value: \"");
-                for (size_t i = 0; i < task->sm.last_header.value_size; i++) {
-                    fprintf(stderr, "%c", task->sm.data.arr[task->sm.last_header.value_off + i]);
+                for (size_t i = 0; i < value_size; i++) {
+                    fprintf(stderr, "%c", value[i]);
                 }
                 fprintf(stderr, "\"\n");
+
+                if (memcmp(name, "Content-Length", MIN(name_size, 14)) == 0 && 
+                    !mem_compare_trimed(value, value_size, "0", 1)) {
+                    schedule_discard_req_and_write_response(task, bad_request_response, bad_request_response_size);
+                    http_state_machine_destruct(&task->sm);
+                    free(task);
+                    return;
+                }
+                else if (memcmp(name, "Connection", MIN(name_size, 10)) == 0) {
+                    http_state_machine_delete_header(&task->sm, task->sm.last_header);
+                }
                 break;
             case COMPLETE:
                 fprintf(stderr, "[Info] %s COMPLETE\n", task->client_ip);
