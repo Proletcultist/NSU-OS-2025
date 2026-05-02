@@ -439,44 +439,6 @@ void http_state_machine_get_header_value(http_state_machine_t *sm, header_t head
     *size = header.value_size;
 }
 
-void http_state_machine_delete_header(http_state_machine_t *sm, header_t header) {
-    size_t header_size = (header.value_off + header.value_size) - header.name_off;
-    // Since header_t must be obtained only from state machine, there must be a LF or CRLF
-    if (sm->data.arr[header.name_off + header_size] == '\n') {
-        header_size++;
-    }
-    else if (sm->data.arr[header.name_off + header_size] == '\r') {
-        header_size += 2;
-    }
-
-    sm->analyzed -= header_size;
-    vector_char_t_erase(&sm->data, header.name_off, header_size);
-}
-
-void http_state_machine_add_header(http_state_machine_t *sm, char *name, size_t name_size, char *value, size_t value_size) {
-    if (sm->state != COMPLETE) {
-        return;
-    }
-
-    // Deleting LF from the end of data
-    sm->data.size--;
-    // If there is CR at the end, delete it too
-    if (sm->data.arr[sm->data.size - 1] == '\r') {
-        sm->data.size--;
-    }
-
-    // name + ": " + value + CRLFCRLF
-    vector_char_t_reserve(&sm->data, sm->data.cap + name_size + 2 + value_size + 4);
-    memcpy(sm->data.arr + sm->data.size, name, name_size);
-    sm->data.size += name_size;
-    memcpy(sm->data.arr + sm->data.size, ": ", 2);
-    sm->data.size += 2;
-    memcpy(sm->data.arr + sm->data.size, value, value_size);
-    sm->data.size += value_size;
-    memcpy(sm->data.arr + sm->data.size, "\r\n\r\n", 4);
-    sm->data.size += 4;
-}
-
 void http_state_machine_destruct(http_state_machine_t *sm) {
     if (sm->uri.buffer != NULL) {
         free(sm->uri.buffer);
