@@ -24,18 +24,25 @@ static inline void aio_delete_task(struct pollfd *pollfd, task_list_t *tasks, ta
     }
 }
 
-static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t *tasks) {
+static void aio_proceed_tasks(size_t index) {
+    struct pollfd *pollfd = &sched.fds.arr[index];
+    task_list_t *tasks = &sched.task_lists.arr[index];
+    short revents = sched.fds.arr[index].revents; 
+
     bool written = false;
+    bool readen = false;
+
     task_t *prev = tasks->first;
 
     for (task_t *cursor = tasks->first->next; cursor != NULL && pollfd->fd != -1;) {
         task_t *tmp = cursor->next;
 
-        if (revents & POLLIN) {
+        if (revents & POLLIN && !readen) {
+            readen = true;
             if (cursor->type == ACCEPT_CONNECTION_REQUESTS) {
                 aio_delete_task(pollfd, tasks, prev, cursor);
 
-                cursor->callback(0, 0, cursor);
+                cursor->callback(0, 0, cursor->data);
                 tmp = prev->next;
             }
             else if (cursor->type == READ_REQUEST) {
@@ -47,9 +54,9 @@ static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t 
                 tmp = prev->next;
             }
         }
-        else if (revents & POLLOUT) {
-            if (cursor->type == WRITE_REQUEST && !written) {
-                written = true;
+        else if (revents & POLLOUT && !written) {
+            written = true;
+            if (cursor->type == WRITE_REQUEST) {
                 ssize_t w = write(cursor->fd, cursor->buffer, cursor->size);
 
                 if (w >= 0) {
@@ -74,6 +81,9 @@ static void aio_proceed_tasks(struct pollfd *pollfd, short revents, task_list_t 
         }
 
         cursor = tmp;
+        pollfd = &sched.fds.arr[index];
+        tasks = &sched.task_lists.arr[index];
+        revents = sched.fds.arr[index].revents; 
     }
 
     if (tasks->reads_amount == 0 && tasks->writes_amount == 0) {
@@ -124,12 +134,12 @@ void aio_scheduler_schedule(task_t *task) {
 }
 
 void aio_scheduler_proceed() {
-    fprintf(stderr, "Poll\n");
+    fprintf(stderr, "Poll %zu\n", sched.fds.size);
     poll(sched.fds.arr, sched.fds.size, -1);
 
     for (size_t i = 0; i < sched.fds.size; i++) {
         if (sched.fds.arr[i].revents & (POLLIN | POLLOUT)) {
-            aio_proceed_tasks(&sched.fds.arr[i], sched.fds.arr[i].revents, &sched.task_lists.arr[i]);
+            aio_proceed_tasks(i);
         }
     }
 
