@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
@@ -7,6 +8,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <stddef.h>
+#include <netdb.h>
 #include "scheduler/aio_scheduler.h"
 #include "http.h"
 #include "proxy/responses.h"
@@ -27,6 +29,16 @@ typedef struct request_analysis_task {
     size_t msg_size;
 } request_analysis_task_t;
 
+static void generate_request(char **buffer, size_t *size, uri_t uri) {
+    size_t hostname_len = strlen(uri.hostname);
+    size_t port_len = strlen(uri.port);
+    size_t path_len = strlen(uri.path);
+    *size = 71 + hostname_len * 2 + port_len + path_len + 1;
+    *buffer = malloc(*size);
+
+    sprintf(*buffer, "GET http://%s:%s%s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\nContent-Lenght: 0\r\n\r\n", uri.hostname, uri.port, uri.path, uri.hostname);
+}
+
 static void write_response_callback(ssize_t r, int errno, void *udata) {
     task_t *task = udata;
 
@@ -38,6 +50,22 @@ static void write_response_callback(ssize_t r, int errno, void *udata) {
         fprintf(stderr, "[Error] Client terminated connection\n");
     }
 
+    close(task->fd);
+    free(task);
+}
+
+static void write_request_callback(ssize_t w, int errno, void *udata) {
+    task_t *task = udata;
+
+    // Check for errors or connection closed
+    if (w < 0) {
+        fprintf(stderr, "[Error] Error while trying to write: %s\n", strerror(errno));
+    }
+    else if (w == 0) {
+        fprintf(stderr, "[Error] Server terminated connection\n");
+    }
+
+    // TODO: Also stop reading from server somehow
     close(task->fd);
     free(task);
 }
@@ -178,11 +206,26 @@ static void read_req_line_and_headers_callback(ssize_t r, int errno, void *udata
                     cache_entry_t *entry = cache_lookup(task->sm.uri);
                     if (entry == NULL) {
                         fprintf(stderr, "No cache for u :(\n");
+
+                        cache_entry_t *new_entry = malloc(sizeof(cache_entry_t));
+                        *new_entry = CACHE_ENTRY_INITIALIZER;
+                        cache_entry_add_pending(new_entry, task->task.fd);
+                        cache_enchache(task->sm.uri, new_entry);
+
+                        // TODO: Do move of uri from state machine properly
+                        task->sm.uri.buffer = NULL;
+
+                        char *port = *task->sm.uri.port == '\0' ? "80" : task->sm.uri.port;
+                        struct addrinfo *res;
+                        int err = getaddrinfo(task->sm.uri.hostname, port, NULL, &res);
+                        
+                        char *buffer;
+                        size_t size;
+                        generate_request(&buffer, &size, task->sm.uri);
                     }
                     else {
                         fprintf(stderr, "Wtf\n");
                     }
-                    // TODO: Open connection with server, schedule writing to it
                 }
 
                 printf("\nBuffer content:\n");
@@ -235,6 +278,8 @@ static void accept_connection(ssize_t r, int errno, void *udata) {
     socklen_t connected_len = sizeof(connected_addr);
     int fd = accept(task->fd, &connected_addr, &connected_len);
 
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
     request_analysis_task_t *read_req_task = malloc(sizeof(request_analysis_task_t));
     if (connected_addr.sa_family == AF_INET) {
