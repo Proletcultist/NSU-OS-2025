@@ -63,9 +63,9 @@ int uri_t_cmp(uri_t uri_l, uri_t uri_r) {
     return strcmp(uri_l.path, uri_r.path);
 }
 
-#define NAME map_uri_cache_entry_t
+#define NAME map_uri_cache_entry_ptr_t
 #define KEY_TYPE uri_t
-#define VALUE_TYPE cache_entry_t
+#define VALUE_TYPE cache_entry_ptr_t
 #define HASHMAP_IMPL
 #include "template/hashmap.h"
 #undef KEY_TYPE

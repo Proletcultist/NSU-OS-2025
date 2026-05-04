@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <fcntl.h>
 #include <unistd.h>
 #include <poll.h>
 #include <stddef.h>
@@ -94,8 +93,6 @@ static void aio_proceed_tasks(size_t index) {
 
 void aio_scheduler_schedule(task_t *task) {
     task->written = 0;
-    int flags = fcntl(task->fd, F_GETFL, 0);
-    fcntl(task->fd, F_SETFL, flags | O_NONBLOCK);
 
     struct pollfd *fd = NULL;
     task_list_t *tasks = NULL;

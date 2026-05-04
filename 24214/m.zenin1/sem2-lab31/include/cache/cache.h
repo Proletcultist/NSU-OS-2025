@@ -24,9 +24,11 @@ typedef struct cache_entry {
 void cache_entry_add_pending(cache_entry_t *entry, int fd);
 void cache_entry_add_block(cache_entry_t *entry, cache_block_t *block);
 
-#define NAME map_uri_cache_entry_t
+typedef cache_entry_t *cache_entry_ptr_t;
+
+#define NAME map_uri_cache_entry_ptr_t
 #define KEY_TYPE uri_t
-#define VALUE_TYPE cache_entry_t
+#define VALUE_TYPE cache_entry_ptr_t
 #define HASHMAP_DECL
 #include "template/hashmap.h"
 #undef KEY_TYPE
@@ -34,6 +36,6 @@ void cache_entry_add_block(cache_entry_t *entry, cache_block_t *block);
 #undef HASHMAP_DECL
 #undef NAME
 
-void cache_enchache(uri_t uri, cache_entry_t entry);
+void cache_enchache(uri_t uri, cache_entry_t *entry);
 cache_entry_t* cache_lookup(uri_t uri);
 
