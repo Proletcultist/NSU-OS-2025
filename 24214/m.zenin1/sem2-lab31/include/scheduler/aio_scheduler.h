@@ -34,6 +34,6 @@ typedef struct aio_scheduler {
     vector_task_list_t task_lists;
 } aio_scheduler_t;
 
-void aio_scheduler_schedule(task_t *task);
+void aio_scheduler_schedule(task_t *task, bool as_first);
 void aio_scheduler_proceed();
 void aio_scheduler_destruct();
