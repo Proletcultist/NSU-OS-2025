@@ -34,7 +34,7 @@ static void aio_proceed_tasks(size_t index) {
     task_t *prev = tasks->first;
 
     for (task_t *cursor = tasks->first->next; cursor != NULL && pollfd->fd != -1;) {
-        task_t *tmp = cursor->next;
+        task_t *next = cursor->next;
 
         if (revents & POLLIN && !readen) {
             readen = true;
@@ -42,7 +42,7 @@ static void aio_proceed_tasks(size_t index) {
                 aio_delete_task(pollfd, tasks, prev, cursor);
 
                 cursor->callback(0, 0, cursor->data);
-                tmp = prev->next;
+                next = prev->next;
             }
             else if (cursor->type == READ_REQUEST) {
                 aio_delete_task(pollfd, tasks, prev, cursor);
@@ -50,12 +50,18 @@ static void aio_proceed_tasks(size_t index) {
                 // Read and callback
                 ssize_t r = read(cursor->fd, cursor->buffer, cursor->size);
                 cursor->callback(r, errno, cursor->data);
-                tmp = prev->next;
+                next = prev->next;
             }
         }
         else if (revents & POLLOUT && !written) {
             written = true;
-            if (cursor->type == WRITE_REQUEST) {
+            if (cursor->type == WAIT_FOR_CONNECTION) {
+                aio_delete_task(pollfd, tasks, prev, cursor);
+
+                cursor->callback(0, 0, cursor->data);
+                next = prev->next;
+            }
+            else if (cursor->type == WRITE_REQUEST) {
                 ssize_t w = write(cursor->fd, cursor->buffer, cursor->size);
 
                 if (w >= 0) {
@@ -64,7 +70,7 @@ static void aio_proceed_tasks(size_t index) {
                         // Write had completed
                         aio_delete_task(pollfd, tasks, prev, cursor);
                         cursor->callback(cursor->written, errno, cursor->data);
-                        tmp = prev->next;
+                        next = prev->next;
                     }
                     else {
                         prev = cursor;
@@ -74,12 +80,12 @@ static void aio_proceed_tasks(size_t index) {
                     // Write had failed
                     aio_delete_task(pollfd, tasks, prev, cursor);
                     cursor->callback(w, errno, cursor->data);
-                    tmp = prev->next;
+                    next = prev->next;
                 }
             }
         }
 
-        cursor = tmp;
+        cursor = next;
         pollfd = &sched.fds.arr[index];
         tasks = &sched.task_lists.arr[index];
         revents = sched.fds.arr[index].revents; 
@@ -91,7 +97,7 @@ static void aio_proceed_tasks(size_t index) {
     }
 }
 
-void aio_scheduler_schedule(task_t *task) {
+void aio_scheduler_schedule(task_t *task, bool as_first) {
     task->written = 0;
 
     struct pollfd *fd = NULL;
@@ -119,7 +125,12 @@ void aio_scheduler_schedule(task_t *task) {
         tasks = &sched.task_lists.arr[*index];
     }
 
-    task_list_append(tasks, task);
+    if (!as_first) {
+        task_list_append(tasks, task);
+    }
+    else {
+        task_list_add_first(tasks, task);
+    }
 
     // Add poll event to wait for
     if (tasks->reads_amount != 0) {

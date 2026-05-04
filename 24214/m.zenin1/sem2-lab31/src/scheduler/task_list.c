@@ -25,6 +25,26 @@ void task_list_append(task_list_t *tl, task_t *task) {
             tl->reads_amount++;
             break;
         case WRITE_REQUEST:
+        case WAIT_FOR_CONNECTION:
+            tl->writes_amount++;
+            break;
+    }
+}
+
+void task_list_add_first(task_list_t *tl, task_t *task) {
+    task->next = tl->first->next;
+    tl->first->next = task;
+    if (task->next == NULL) {
+        tl->last = task;
+    }
+
+    switch (task->type) {
+        case ACCEPT_CONNECTION_REQUESTS:
+        case READ_REQUEST:
+            tl->reads_amount++;
+            break;
+        case WRITE_REQUEST:
+        case WAIT_FOR_CONNECTION:
             tl->writes_amount++;
             break;
     }
@@ -45,6 +65,7 @@ void task_list_delete(task_list_t *tl, task_t *prev, task_t *this) {
             tl->reads_amount--;
             break;
         case WRITE_REQUEST:
+        case WAIT_FOR_CONNECTION:
             tl->writes_amount--;
             break;
     }

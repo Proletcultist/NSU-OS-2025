@@ -5,6 +5,7 @@
 
 typedef enum task_type {
     ACCEPT_CONNECTION_REQUESTS,
+    WAIT_FOR_CONNECTION,
     READ_REQUEST,
     WRITE_REQUEST
 } task_type_t;
