@@ -1,5 +1,6 @@
 #pragma once
 
+#include <time.h>
 #include "scheduler/task.h"
 
 typedef struct task_list {

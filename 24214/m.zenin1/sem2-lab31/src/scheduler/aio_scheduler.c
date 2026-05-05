@@ -1,3 +1,5 @@
+#include <math.h>
+#include <time.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <poll.h>
@@ -5,6 +7,8 @@
 #include <stdlib.h>
 #include <errno.h>
 #include "scheduler/aio_scheduler.h"
+
+#define CHECKUP_TIMEOUT 2 * 1000 // ms
 
 aio_scheduler_t sched = {
                             .fds = (vector_pollfd_t) VECTOR_INITIALIZER,
@@ -31,10 +35,12 @@ static void aio_proceed_tasks(size_t index) {
 
     task_t *prev = sched.task_lists.arr[index].first;
 
+    time_t loop_start = time(NULL);
     for (task_t *cursor = prev->next; cursor != NULL && sched.fds.arr[index].fd != -1;) {
         task_t *next = cursor->next;
 
         if (revents & POLLIN && !readen) {
+            cursor->last_update = loop_start;
             readen = true;
             if (cursor->type == ACCEPT_CONNECTION_REQUESTS) {
                 aio_delete_task(&sched.fds.arr[index], &sched.task_lists.arr[index], prev, cursor);
@@ -52,6 +58,7 @@ static void aio_proceed_tasks(size_t index) {
             }
         }
         else if (revents & POLLOUT && !written) {
+            cursor->last_update = loop_start;
             written = true;
             if (cursor->type == WAIT_FOR_CONNECTION) {
                 aio_delete_task(&sched.fds.arr[index], &sched.task_lists.arr[index], prev, cursor);
@@ -82,9 +89,13 @@ static void aio_proceed_tasks(size_t index) {
                 }
             }
         }
+        else if (cursor->timeout != NAN && difftime(loop_start, cursor->last_update) > cursor->timeout) {
+            aio_delete_task(&sched.fds.arr[index], &sched.task_lists.arr[index], prev, cursor);
+            cursor->callback(-1, ETIMEDOUT, cursor->data);
+            next = prev->next;
+        }
 
         cursor = next;
-        revents = sched.fds.arr[index].revents; 
     }
 
     if (sched.task_lists.arr[index].reads_amount == 0 && sched.task_lists.arr[index].writes_amount == 0) {
@@ -135,22 +146,26 @@ void aio_scheduler_schedule(task_t *task, bool as_first) {
     if (tasks->writes_amount != 0) {
         fd->events |= POLLOUT;
     }
+
+    task->last_update = time(NULL);
 }
 
 void aio_scheduler_proceed() {
     fprintf(stderr, "Poll %zu\n", sched.fds.size);
-    poll(sched.fds.arr, sched.fds.size, -1);
+    poll(sched.fds.arr, sched.fds.size,  CHECKUP_TIMEOUT);
 
     for (size_t i = 0; i < sched.fds.size; i++) {
-        if (sched.fds.arr[i].revents & (POLLIN | POLLOUT)) {
-            aio_proceed_tasks(i);
-        }
+        aio_proceed_tasks(i);
     }
 
     // Cleanup deleted pollfds
     for (size_t i = 0; i < sched.fds.size;) {
         size_t index = sched.fds.size - i - 1;
         if (sched.fds.arr[index].fd == -1){
+            for (task_t *cursor = sched.task_lists.arr[index].first->next; cursor != NULL; cursor = sched.task_lists.arr[index].first->next) {
+                aio_delete_task(&sched.fds.arr[index], &sched.task_lists.arr[index], sched.task_lists.arr[index].first, cursor);
+                cursor->callback(-1, ECANCELED, cursor->data);
+            }
             // Just delete from the end
             if (index == sched.fds.size - 1) {
                 task_list_destruct(&sched.task_lists.arr[index]);
@@ -176,6 +191,7 @@ void aio_scheduler_proceed() {
 void aio_scheduler_cancel_all(int fd) {
     size_t *index = map_int_size_t_get(&sched.fdToIndex, fd);
     if (index != NULL) {
+        map_int_size_t_remove(&sched.fdToIndex, fd);
         sched.fds.arr[*index].fd = -1;
     }
 }

@@ -30,6 +30,7 @@ void schedule_error_response(int fd, char *msg, size_t msg_size) {
                             .buffer = msg,
                             .size = msg_size,
                             .data = write_error_task,
+                            .timeout = 10.0,
                             .callback = respond_error_callback
                         };
     aio_scheduler_schedule(write_error_task, false);

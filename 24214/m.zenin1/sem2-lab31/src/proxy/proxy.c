@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -47,6 +48,7 @@ static void accept_connection(ssize_t r, int err, void *udata) {
                               .buffer = buffer,
                               .size = size,
                               .data = read_req_task,
+                              .timeout = 10.0,
                               .callback = analyze_request_callback
                           };
 
@@ -77,6 +79,7 @@ void start_proxy(struct in_addr ip, in_port_t port) {
                      .type = ACCEPT_CONNECTION_REQUESTS,
                      .fd = listening,
                      .data = &accept_task,
+                     .timeout = NAN,
                      .callback = accept_connection
                   };
 
