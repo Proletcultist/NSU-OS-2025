@@ -177,6 +177,13 @@ void aio_scheduler_proceed() {
     }
 }
 
+void aio_scheduler_cancel_all(int fd) {
+    size_t *index = map_int_size_t_get(&sched.fdToIndex, fd);
+    if (index != NULL) {
+        sched.fds.arr[*index].fd = -1;
+    }
+}
+
 void aio_scheduler_destruct() {
 }
 

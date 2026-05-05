@@ -14,3 +14,6 @@ extern size_t method_not_allowed_size;
 
 extern char version_not_supported_response[];
 extern size_t version_not_supported_response_size;
+
+extern char not_found_response[];
+extern size_t not_found_response_size;

@@ -15,3 +15,6 @@ size_t method_not_allowed_size = sizeof(method_not_allowed);
 
 char version_not_supported_response[] = "HTTP/1.0 505 HTTP Version Not Supported\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 size_t version_not_supported_response_size = sizeof(version_not_supported_response);
+
+char not_found_response[] = "HTTP/1.0 404 HTTP Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+size_t not_found_response_size = sizeof(not_found_response);
