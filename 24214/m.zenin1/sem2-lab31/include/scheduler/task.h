@@ -1,5 +1,6 @@
 #pragma once
 
+#include <time.h>
 #include <stddef.h>
 #include <sys/types.h>
 
@@ -16,6 +17,9 @@ typedef struct task {
     int fd;
     void *buffer;
     size_t size;
+
+    time_t last_update;
+    double timeout;
 
     void *data;
     void (*callback)(ssize_t, int, void*);

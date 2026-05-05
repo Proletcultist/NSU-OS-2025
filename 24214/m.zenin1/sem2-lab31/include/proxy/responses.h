@@ -17,3 +17,9 @@ extern size_t version_not_supported_response_size;
 
 extern char not_found_response[];
 extern size_t not_found_response_size;
+
+extern char bad_gateway_response[];
+extern size_t bad_gateway_response_size;
+
+extern char gateway_timeout_response[];
+extern size_t gateway_timeout_response_size;
