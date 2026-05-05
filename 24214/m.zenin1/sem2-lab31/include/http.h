@@ -10,17 +10,28 @@
 #undef TYPE
 #undef NAME
 
-#define HTTP_STATE_MACHINE_INITIALIZER ((http_state_machine_t) \
-                                        { \
-                                         .state = READING_REQUEST_LINE, \
-                                         .available_lines = 0, \
-                                         .analyzed = 0, \
-                                         .discarding = false, \
-                                         .data = (vector_char_t) VECTOR_INITIALIZER \
-                                        })
+#define HTTP_STATE_MACHINE_REQ_INITIALIZER ((http_state_machine_t) \
+                                            { \
+                                             .state = READING_REQUEST_LINE, \
+                                             .available_lines = 0, \
+                                             .analyzed = 0, \
+                                             .discarding = false, \
+                                             .data = (vector_char_t) VECTOR_INITIALIZER \
+                                            })
+#define HTTP_STATE_MACHINE_RES_INITIALIZER ((http_state_machine_t) \
+                                            { \
+                                             .state = READING_STATUS_LINE, \
+                                             .available_lines = 0, \
+                                             .analyzed = 0, \
+                                             .discarding = false, \
+                                             .data = (vector_char_t) VECTOR_INITIALIZER \
+                                            })
+
 typedef enum http_state_machine_state {
     READING_REQUEST_LINE,
     READ_REQUEST_LINE,
+    READING_STATUS_LINE,
+    READ_STATUS_LINE,
     READING_HEADER,
     HEADER_AVAILABLE,
     MALFORMED,
@@ -57,6 +68,8 @@ typedef struct http_state_machine {
     uri_t uri;
     http_version_t version;
     header_t last_header;
+
+    unsigned int status;
 
     bool discarding;
 

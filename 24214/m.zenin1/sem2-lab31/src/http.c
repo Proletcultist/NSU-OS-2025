@@ -246,6 +246,51 @@ static bool skip_eol(http_state_machine_t *sm) {
     return true;
 }
 
+static bool skip_text(http_state_machine_t *sm) {
+    while (!iscntrl(sm->data.arr[sm->analyzed])) {
+        sm->analyzed++;
+    }
+    return true;
+}
+
+static void analyze_status_line(http_state_machine_t *sm) {
+    if (!analyze_version(sm)) {
+        return;
+    }
+
+    if (!skip_spaces(sm)) {
+        return;
+    }
+
+    char *end;
+    sm->status = (unsigned int) strtoul(sm->data.arr + sm->analyzed, &end, 10);
+    if (end == (sm->data.arr + sm->analyzed)) {
+        sm->state = MALFORMED;
+        return;
+    }
+
+    sm->analyzed += (size_t) (end - (sm->data.arr + sm->analyzed));
+
+    if (!skip_spaces(sm)) {
+        return;
+    }
+
+    if (!skip_text(sm)) {
+        return;
+    }
+
+    if (sm->data.arr[sm->analyzed] == ' ' || sm->data.arr[sm->analyzed] == '\t') {
+        skip_spaces(sm);
+    }
+
+    if (!skip_eol(sm)) {
+        return;
+    }
+
+    sm->state = READ_STATUS_LINE;
+    sm->available_lines--;
+}
+
 static void analyze_req_line(http_state_machine_t *sm) {
     if (!analyze_method(sm)) {
         return;
@@ -299,13 +344,6 @@ static void analyze_req_line(http_state_machine_t *sm) {
     sm->available_lines--;
 }
 
-static bool skip_field_value(http_state_machine_t *sm) {
-    while (!iscntrl(sm->data.arr[sm->analyzed])) {
-        sm->analyzed++;
-    }
-    return true;
-}
-
 static void analyze_header(http_state_machine_t *sm) {
     if (iscntrl(sm->data.arr[sm->analyzed])) {
         // If there is incomplete header - it's now complete, and can be accessed
@@ -326,7 +364,7 @@ static void analyze_header(http_state_machine_t *sm) {
             return;
         }
         
-        if (!skip_field_value(sm)) {
+        if (!skip_text(sm)) {
             return;
         }
 
@@ -359,7 +397,7 @@ static void analyze_header(http_state_machine_t *sm) {
 
         sm->last_header.value_off = sm->analyzed;
 
-        if (!skip_field_value(sm)) {
+        if (!skip_text(sm)) {
             return;
         }
 
@@ -408,6 +446,10 @@ static void http_state_machine_analyze_next_line(http_state_machine_t *sm) {
         case READING_REQUEST_LINE:
             analyze_req_line(sm);
             break;
+        case READING_STATUS_LINE:
+            analyze_status_line(sm);
+            break;
+        case READ_STATUS_LINE:
         case READ_REQUEST_LINE:
         case READING_HEADER:
         case HEADER_AVAILABLE:
