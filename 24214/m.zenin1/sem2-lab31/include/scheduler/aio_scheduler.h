@@ -35,5 +35,6 @@ typedef struct aio_scheduler {
 } aio_scheduler_t;
 
 void aio_scheduler_schedule(task_t *task, bool as_first);
+void aio_scheduler_cancel_all(int fd);
 void aio_scheduler_proceed();
 void aio_scheduler_destruct();

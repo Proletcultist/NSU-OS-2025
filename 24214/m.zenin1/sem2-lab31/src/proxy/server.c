@@ -7,34 +7,136 @@
 #include <netdb.h>
 #include "proxy/server.h"
 #include "scheduler/aio_scheduler.h"
+#include "proxy/util.h"
+#include "proxy/client.h"
+#include "proxy/responses.h"
+
+void establish_connect_with_server(uri_t uri, cache_entry_t *entry) {
+    char *port = *uri.port == '\0' ? "80" : uri.port;
+    struct addrinfo *res = resolve_address(uri.hostname, port);
+    if (res == NULL) {
+        cache_delete(uri);
+        for (pending_client_t *cursor = entry->pending; cursor != NULL; cursor = cursor->next) {
+            schedule_error_response(cursor->fd, not_found_response, not_found_response_size);
+        }
+        return;
+    }
+
+    int server = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+
+    struct addrinfo *current_try = res;
+    int err = -1;
+    do {
+        err = connect(server, current_try->ai_addr, current_try->ai_addrlen);
+
+        // Connection in progress
+        if (err < 0 && (errno == EINPROGRESS || errno == EAGAIN)) {
+            try_connect_to_server_task_t *connect_task = malloc(sizeof(try_connect_to_server_task_t));
+            *connect_task = (try_connect_to_server_task_t)
+                            {
+                                .task = (task_t)
+                                        {
+                                            .type = WAIT_FOR_CONNECTION,
+                                            .fd = server,
+                                            .data = connect_task,
+                                            .callback = try_connect_callback
+                                        },
+                                .uri = uri,
+                                .first = res,
+                                .next_try = current_try->ai_next
+                            };
+            aio_scheduler_schedule((task_t*) connect_task, true);
+            break;
+        }
+
+        current_try = current_try->ai_next;
+    } while (err < 0 && current_try != NULL);
+    if (err < 0 && current_try == NULL) {
+        cache_delete(uri);
+        for (pending_client_t *cursor = entry->pending; cursor != NULL; cursor = cursor->next) {
+            // TODO: Send error
+            // schedule_error_response(cursor->fd, not_found_response, not_found_response_size);
+        }
+        fprintf(stderr, "[Error] Failed to connect to %s: %s\n", uri.hostname, strerror(errno));
+        freeaddrinfo(res);
+        close(server);
+        return;
+    }
+    else if (err >= 0) {
+        fprintf(stderr, "[Info] Connected to %s successfully\n", uri.hostname);
+    }
+
+    // Schedule request writing
+    char *req_buffer;
+    size_t req_size;
+    generate_request(&req_buffer, &req_size, uri);
+    task_t *write_req_task = malloc(sizeof(task_t));
+    *write_req_task = (task_t)
+                      {
+                          .type = WRITE_REQUEST,
+                          .fd = server,
+                          .buffer = req_buffer,
+                          .size = req_size,
+                          .data = write_req_task,
+                          .callback = write_request_callback
+                      };
+    aio_scheduler_schedule(write_req_task, false);
+
+    // Schedule response reading
+    response_analysis_task_t *read_res_task = malloc(sizeof(response_analysis_task_t));
+    read_res_task->uri = uri;
+    read_res_task->cache_entry = entry;
+    read_res_task->sm = HTTP_STATE_MACHINE_RES_INITIALIZER;
+    // read_res_task->sm.state = 
+    void *resp_buffer;
+    size_t resp_size;
+    http_state_machine_alloc(&read_res_task->sm, &resp_buffer, &resp_size);
+    read_res_task->task = (task_t)
+                          {
+                              .type = READ_REQUEST,
+                              .fd = server,
+                              .buffer = resp_buffer,
+                              .size = resp_size,
+                              .data = read_res_task,
+                              .callback = analyze_response_callback
+                          };
+
+    aio_scheduler_schedule((task_t*) read_res_task, false);
+}
 
 void try_connect_callback(ssize_t r, int err, void *udata) {
     try_connect_to_server_task_t *task = udata;
 
     socklen_t len = sizeof(err);
     getsockopt(task->task.fd, SOL_SOCKET, SO_ERROR, &err, &len);
+
     if (err == 0) {
-        fprintf(stderr, "[Info] Connected successfully\n");
+        fprintf(stderr, "[Info] Connected to %s successfully\n", task->uri.hostname);
         freeaddrinfo(task->first);
         free(task);
-    }
-    else if (task->next_try != NULL) {
-        err = connect(task->task.fd, task->next_try->ai_addr, task->next_try->ai_addrlen);
-        if (err < 0 && (errno == EINPROGRESS || errno == EAGAIN)) {
-            task->next_try = task->next_try->ai_next;
-            aio_scheduler_schedule((task_t*) task, true);
-        }
-        else if (err < 0) {
-            // TODO: Handle
-            fprintf(stderr, "[Info] Error while trying to connect\n");
-            freeaddrinfo(task->first);
-            free(task);
-        }
     }
     else {
-        fprintf(stderr, "[Error] Failed to connect\n");
-        freeaddrinfo(task->first);
-        free(task);
+        struct addrinfo *current_try = task->next_try;
+        while (err < 0 && current_try != NULL) {
+            err = connect(task->task.fd, current_try->ai_addr, current_try->ai_addrlen);
+
+            // Connection in progress
+            if (err < 0 && (errno == EINPROGRESS || errno == EAGAIN)) {
+                task->next_try = current_try->ai_next;
+                aio_scheduler_schedule((task_t*) task, true);
+                break;
+            }
+
+            current_try = current_try->ai_next;
+        }
+        if (err < 0 && current_try == NULL) {
+            fprintf(stderr, "[Error] Failed to connect to %s\n", task->uri.hostname);
+            freeaddrinfo(task->first);
+            aio_scheduler_cancel_all(task->task.fd);
+            close(task->task.fd);
+            free(task);
+            return;
+        }
     }
 }
 
@@ -44,13 +146,15 @@ void write_request_callback(ssize_t w, int err, void *udata) {
     // Check for errors or connection closed
     if (w < 0) {
         fprintf(stderr, "[Error] Error while trying to write: %s\n", strerror(err));
+        aio_scheduler_cancel_all(task->fd);
         close(task->fd);
-        // TODO: Also stop reading from server somehow
+        // TODO: Write error to all clients
     }
     else if (w == 0) {
         fprintf(stderr, "[Error] Server terminated connection\n");
+        aio_scheduler_cancel_all(task->fd);
         close(task->fd);
-        // TODO: Also stop reading from server somehow
+        // TODO: Write error to all clients
     }
 
     free(task);
@@ -63,19 +167,21 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
     if (r < 0) {
         fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->uri.hostname, strerror(err));
 
-        // TODO: Also stop writing
+        aio_scheduler_cancel_all(task->task.fd);
         close(task->task.fd);
         http_state_machine_destruct(&task->sm);
         free(task);
+        // TODO: Write error to all clients
         return;
     }
     else if (r == 0) {
         fprintf(stderr, "[Error] Server %s terminated connection\n", task->uri.hostname);
 
-        // TODO: Also stop writing
+        aio_scheduler_cancel_all(task->task.fd);
         close(task->task.fd);
         http_state_machine_destruct(&task->sm);
         free(task);
+        // TODO: Write error to all clients
         return;
     }
 

@@ -29,6 +29,10 @@ void cache_enchache(uri_t uri, cache_entry_t *entry) {
     map_uri_cache_entry_ptr_t_set(&cache, uri, entry);
 }
 
+void cache_delete(uri_t uri) {
+    map_uri_cache_entry_ptr_t_remove(&cache, uri);
+}
+
 cache_entry_t* cache_lookup(uri_t uri) {
     cache_entry_t **ptr = map_uri_cache_entry_ptr_t_get(&cache, uri);
     return ptr == NULL ? NULL : *ptr;

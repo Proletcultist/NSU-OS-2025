@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <netdb.h>
+#include <errno.h>
 #include <sys/types.h>
 #include "scheduler/task.h"
 #include "scheduler/aio_scheduler.h"
@@ -71,6 +72,10 @@ struct addrinfo* resolve_address(char *hostname, char *port) {
         .ai_socktype = SOCK_STREAM
     };
     int err = getaddrinfo(hostname, port, &hints, &res);
+    if (err) {
+        fprintf(stderr, "[Error] Failed to resolve %s: %s\n", hostname, gai_strerror(err));
+        return NULL;
+    }
 
     return res;
 }
