@@ -8,7 +8,18 @@ CC = gcc
 CC_ARGS = -g -Wall -Wextra -I ${INCLUDE_DIR}
 DEP_ARGS = -MT $@ -MMD -MP -MF ${DEPS_DIR}/$*.d
 
-SOURCES = main.c vectors_definition.c maps_definition.c cache/cache.c proxy/proxy.c http.c proxy/responses.c scheduler/aio_scheduler.c scheduler/task_list.c
+SOURCES = main.c \
+          vectors_definition.c \
+          maps_definition.c \
+          cache/cache.c \
+          proxy/util.c \
+          proxy/client.c \
+          proxy/server.c \
+          proxy/proxy.c \
+          proxy/responses.c \
+          http.c \
+          scheduler/aio_scheduler.c \
+          scheduler/task_list.c
 
 main: ${BUILD_DIR}/main
 
