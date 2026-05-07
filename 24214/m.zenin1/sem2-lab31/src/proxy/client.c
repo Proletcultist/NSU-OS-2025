@@ -33,18 +33,20 @@ void analyze_request_callback(ssize_t r, int err, void *udata) {
 
     // Check for errors or connection closed
     if (r < 0) {
-        fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->client_ip, strerror(err));
+        fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->client->client_ip, strerror(err));
 
         close(task->task.fd);
         http_state_machine_destruct(&task->sm);
+        free(task->client);
         free(task);
         return;
     }
     else if (r == 0) {
-        fprintf(stderr, "[Error] Client %s terminated connection\n", task->client_ip);
+        fprintf(stderr, "[Error] Client %s terminated connection\n", task->client->client_ip);
 
         close(task->task.fd);
         http_state_machine_destruct(&task->sm);
+        free(task->client);
         free(task);
         return;
     }
@@ -53,6 +55,7 @@ void analyze_request_callback(ssize_t r, int err, void *udata) {
     if (task->bytes_received > MAX_HEADERS_SIZE) {
         schedule_error_response(task->task.fd, bad_request_response, bad_request_response_size);
         http_state_machine_destruct(&task->sm);
+        free(task->client);
         free(task);
         return;
     }
@@ -63,10 +66,11 @@ void analyze_request_callback(ssize_t r, int err, void *udata) {
             case MALFORMED:
                 schedule_error_response(task->task.fd, bad_request_response, bad_request_response_size);
                 http_state_machine_destruct(&task->sm);
+                free(task->client);
                 free(task);
                 return;
             case READ_REQUEST_LINE:
-                fprintf(stderr, "[Info] %s Parsed hostname: \"%s\" port: \"%s\", path: \"%s\"\n", task->client_ip, task->sm.uri.hostname, task->sm.uri.port, task->sm.uri.path);
+                fprintf(stderr, "[Info] %s Parsed hostname: \"%s\" port: \"%s\", path: \"%s\"\n", task->client->client_ip, task->sm.uri.hostname, task->sm.uri.port, task->sm.uri.path);
                 switch (task->sm.method) {
                     case POST:
                     case HEAD:
@@ -94,7 +98,7 @@ void analyze_request_callback(ssize_t r, int err, void *udata) {
                 http_state_machine_get_header_name(&task->sm, task->sm.last_header, &name, &name_size);
                 http_state_machine_get_header_value(&task->sm, task->sm.last_header, &value, &value_size);
 
-                fprintf(stderr, "[Info] %s Field-name: \"", task->client_ip);
+                fprintf(stderr, "[Info] %s Field-name: \"", task->client->client_ip);
                 for (size_t i = 0; i < name_size; i++) {
                     fprintf(stderr, "%c", name[i]);
                 }
@@ -118,7 +122,7 @@ void analyze_request_callback(ssize_t r, int err, void *udata) {
                 else {
                     cache_entry_t *entry = cache_lookup(task->sm.uri);
                     if (entry == NULL) {
-                        fprintf(stderr, "[Info] %s Cache miss for %s\n", task->client_ip, task->sm.uri.hostname);
+                        fprintf(stderr, "[Info] %s Cache miss for %s\n", task->client->client_ip, task->sm.uri.hostname);
 
                         cache_entry_t *new_entry = malloc(sizeof(cache_entry_t));
                         *new_entry = CACHE_ENTRY_INITIALIZER;
@@ -131,11 +135,12 @@ void analyze_request_callback(ssize_t r, int err, void *udata) {
                         task->sm.uri.buffer = NULL;
                     }
                     else {
-                        fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client_ip, task->sm.uri.hostname);
+                        fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client->client_ip, task->sm.uri.hostname);
                     }
                 }
 
                 http_state_machine_destruct(&task->sm);
+                free(task->client);
                 free(task);
                 return;
             case READ_STATUS_LINE:
@@ -152,6 +157,7 @@ void analyze_request_callback(ssize_t r, int err, void *udata) {
     if (task->sm.data.size - task->sm.analyzed > MAX_LINE_SIZE) {
         schedule_error_response(task->task.fd, bad_request_response, bad_request_response_size);
         http_state_machine_destruct(&task->sm);
+        free(task->client);
         free(task);
         return;
     }

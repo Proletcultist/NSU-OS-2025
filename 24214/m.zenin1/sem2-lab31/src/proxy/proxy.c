@@ -25,19 +25,23 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     int flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
-    request_analysis_task_t *read_req_task = malloc(sizeof(request_analysis_task_t));
+    proxy_client_t *client = malloc(sizeof(proxy_client_t));
+    client->state = CLIENT_CONNECTED;
     if (connected_addr.sa_family == AF_INET) {
-        inet_ntop(AF_INET, &((struct sockaddr_in*) &connected_addr)->sin_addr, read_req_task->client_ip, INET_ADDRSTRLEN);
-        fprintf(stderr, "[Info] Connected: %s\n", read_req_task->client_ip);
+        inet_ntop(AF_INET, &((struct sockaddr_in*) &connected_addr)->sin_addr, client->client_ip, INET_ADDRSTRLEN);
+        fprintf(stderr, "[Info] Connected: %s\n", client->client_ip);
     }
     else {
-        strncpy(read_req_task->client_ip, "Unknown", sizeof(read_req_task->client_ip) - 1);
+        strncpy(client->client_ip, "Unknown", sizeof(client->client_ip) - 1);
+        client->client_ip[sizeof(client->client_ip - 1)] = '\0';
     }
 
-    read_req_task->sm = HTTP_STATE_MACHINE_REQ_INITIALIZER;
-    read_req_task->bad_request = false;
-    read_req_task->sm.discarding = true;
+    request_analysis_task_t *read_req_task = malloc(sizeof(request_analysis_task_t));
+    read_req_task->client = client;
     read_req_task->bytes_received = 0;
+    read_req_task->sm = HTTP_STATE_MACHINE_REQ_INITIALIZER;
+    read_req_task->sm.discarding = true;
+    read_req_task->bad_request = false;
     void *buffer;
     size_t size;
     http_state_machine_alloc(&read_req_task->sm, &buffer, &size);

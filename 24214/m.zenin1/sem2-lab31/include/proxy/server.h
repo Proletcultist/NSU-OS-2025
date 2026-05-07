@@ -5,25 +5,37 @@
 #include "cache/cache.h"
 #include "http.h"
 
-typedef struct try_connect_to_server_task {
-    task_t task;
+typedef enum proxy_server_state {
+    SERVER_CONNECTION_IN_PROGRESS,
+    SERVER_CONNECTED,
+    SERVER_DISCONNECTED
+} proxy_server_state_t;
+
+typedef struct proxy_server {
+    proxy_server_state_t state;
     uri_t uri;
     cache_entry_t *cache_entry;
+} proxy_server_t;
+
+typedef struct try_connect_to_server_task {
+    task_t task;
+    proxy_server_t *server;
+
     struct addrinfo *first;
     struct addrinfo *next_try;
 } try_connect_to_server_task_t;
 
 typedef struct response_analysis_task {
     task_t task;
-    uri_t uri;
-    cache_entry_t *cache_entry;
+    proxy_server_t *server;
+
+    ssize_t content_length;
     http_state_machine_t sm;
 } response_analysis_task_t;
 
 typedef struct request_writing_task {
     task_t task;
-    uri_t uri;
-    cache_entry_t *cache_entry;
+    proxy_server_t *server;
 } request_writing_task_t;
 
 void establish_connect_with_server(uri_t uri, cache_entry_t *entry);
