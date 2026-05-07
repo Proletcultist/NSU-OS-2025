@@ -11,28 +11,36 @@
 #include "proxy/client.h"
 #include "proxy/responses.h"
 
-static void fail_server_connection(uri_t uri, cache_entry_t *entry, char *msg, size_t msg_size) {
-    cache_delete(uri);
-    for (pending_client_t *cursor = entry->pending; cursor != NULL; cursor = cursor->next) {
+static void fail_server_connection(proxy_server_t server, char *msg, size_t msg_size) {
+    cache_delete(server.uri);
+    for (pending_client_t *cursor = server.cache_entry->pending; cursor != NULL; cursor = cursor->next) {
         schedule_error_response(cursor->fd, msg, msg_size);
     }
+    free(server.uri.buffer);
+    free(server.cache_entry);
 }
 
 void establish_connect_with_server(uri_t uri, cache_entry_t *entry) {
     char *port = *uri.port == '\0' ? "80" : uri.port;
     struct addrinfo *res = resolve_address(uri.hostname, port);
     if (res == NULL) {
-        fail_server_connection(uri, entry, not_found_response, not_found_response_size);
-        free(uri.buffer);
+        fail_server_connection((proxy_server_t) {.uri = uri, .cache_entry = entry}, not_found_response, not_found_response_size);
         return;
     }
 
-    int server = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    proxy_server_t *server = malloc(sizeof(proxy_server_t));
+    *server = (proxy_server_t)
+              {
+                  .state = SERVER_CONNECTION_IN_PROGRESS,
+                  .uri = uri,
+                  .cache_entry = entry
+              };
+    int server_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 
     struct addrinfo *current_try = res;
     int err = -1;
     do {
-        err = connect(server, current_try->ai_addr, current_try->ai_addrlen);
+        err = connect(server_fd, current_try->ai_addr, current_try->ai_addrlen);
 
         // Connection in progress
         if (err < 0 && errno == EINPROGRESS) {
@@ -42,13 +50,12 @@ void establish_connect_with_server(uri_t uri, cache_entry_t *entry) {
                                 .task = (task_t)
                                         {
                                             .type = WAIT_FOR_CONNECTION,
-                                            .fd = server,
+                                            .fd = server_fd,
                                             .data = connect_task,
                                             .timeout = 2.0,
                                             .callback = try_connect_callback
                                         },
-                                .uri = uri,
-                                .cache_entry = entry,
+                                .server = server,
                                 .first = res,
                                 .next_try = current_try->ai_next
                             };
@@ -59,15 +66,16 @@ void establish_connect_with_server(uri_t uri, cache_entry_t *entry) {
         current_try = current_try->ai_next;
     } while (err < 0 && current_try != NULL);
     if (err < 0 && current_try == NULL) {
-        fprintf(stderr, "[Error] Failed to connect to %s: %s\n", uri.hostname, strerror(errno));
-        fail_server_connection(uri, entry, bad_gateway_response, bad_gateway_response_size);
+        fprintf(stderr, "[Error] Failed to connect to %s: %s\n", server->uri.hostname, strerror(errno));
+        fail_server_connection(*server, bad_gateway_response, bad_gateway_response_size);
+        free(server);
         freeaddrinfo(res);
-        free(uri.buffer);
-        close(server);
+        close(server_fd);
         return;
     }
     else if (err >= 0) {
-        fprintf(stderr, "[Info] Connected to %s successfully\n", uri.hostname);
+        fprintf(stderr, "[Info] Connected to %s successfully\n", server->uri.hostname);
+        server->state = SERVER_CONNECTED;
     }
 
     // Schedule request writing
@@ -80,31 +88,28 @@ void establish_connect_with_server(uri_t uri, cache_entry_t *entry) {
                           .task = (task_t)
                                   {
                                       .type = WRITE_REQUEST,
-                                      .fd = server,
+                                      .fd = server_fd,
                                       .buffer = req_buffer,
                                       .size = req_size,
                                       .data = write_req_task,
                                       .timeout = 10.0,
                                       .callback = write_request_callback
                                   },
-                          .uri = uri,
-                          .cache_entry = entry
+                          .server = server
                       };
     aio_scheduler_schedule((task_t*) write_req_task, false);
 
     // Schedule response reading
     response_analysis_task_t *read_res_task = malloc(sizeof(response_analysis_task_t));
-    read_res_task->uri = uri;
-    read_res_task->cache_entry = entry;
+    read_res_task->server = server;
     read_res_task->sm = HTTP_STATE_MACHINE_RES_INITIALIZER;
-    // read_res_task->sm.state = 
     void *resp_buffer;
     size_t resp_size;
     http_state_machine_alloc(&read_res_task->sm, &resp_buffer, &resp_size);
     read_res_task->task = (task_t)
                           {
                               .type = READ_REQUEST,
-                              .fd = server,
+                              .fd = server_fd,
                               .buffer = resp_buffer,
                               .size = resp_size,
                               .data = read_res_task,
@@ -131,7 +136,8 @@ void try_connect_callback(ssize_t r, int err, void *udata) {
     }
 
     if (err == 0) {
-        fprintf(stderr, "[Info] Connected to %s successfully\n", task->uri.hostname);
+        fprintf(stderr, "[Info] Connected to %s successfully\n", task->server->uri.hostname);
+        task->server->state = SERVER_CONNECTED;
         freeaddrinfo(task->first);
         free(task);
     }
@@ -151,17 +157,17 @@ void try_connect_callback(ssize_t r, int err, void *udata) {
             current_try = current_try->ai_next;
         }
         if (connect_res < 0 && current_try == NULL) {
-            fprintf(stderr, "[Error] Failed to connect to %s\n", task->uri.hostname);
+            fprintf(stderr, "[Error] Failed to connect to %s\n", task->server->uri.hostname);
             if (err == ETIMEDOUT) {
-                fail_server_connection(task->uri, task->cache_entry, gateway_timeout_response, gateway_timeout_response_size);
+                fail_server_connection(*task->server, gateway_timeout_response, gateway_timeout_response_size);
             }
             else {
-                fail_server_connection(task->uri, task->cache_entry, bad_gateway_response, bad_gateway_response_size);
+                fail_server_connection(*task->server, bad_gateway_response, bad_gateway_response_size);
             }
             aio_scheduler_cancel_all(task->task.fd);
             close(task->task.fd);
             freeaddrinfo(task->first);
-            free(task->uri.buffer);
+            free(task->server);
             free(task);
             return;
         }
@@ -174,17 +180,17 @@ void write_request_callback(ssize_t w, int err, void *udata) {
     // Check for errors or connection closed
     if (w < 0 && err != ECANCELED) {
         fprintf(stderr, "[Error] Error while trying to write: %s\n", strerror(err));
-        fail_server_connection(task->uri, task->cache_entry, bad_gateway_response, bad_gateway_response_size);
+        fail_server_connection(*task->server, bad_gateway_response, bad_gateway_response_size);
         aio_scheduler_cancel_all(task->task.fd);
+        free(task->server);
         close(task->task.fd);
-        free(task->uri.buffer);
     }
     else if (w == 0) {
         fprintf(stderr, "[Error] Server terminated connection\n");
-        fail_server_connection(task->uri, task->cache_entry, bad_gateway_response, bad_gateway_response_size);
+        fail_server_connection(*task->server, bad_gateway_response, bad_gateway_response_size);
         aio_scheduler_cancel_all(task->task.fd);
+        free(task->server);
         close(task->task.fd);
-        free(task->uri.buffer);
     }
 
     free(task);
@@ -200,24 +206,24 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
         return;
     }
     else if (r < 0) {
-        fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->uri.hostname, strerror(err));
+        fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->server->uri.hostname, strerror(err));
 
-        fail_server_connection(task->uri, task->cache_entry, bad_gateway_response, bad_gateway_response_size);
+        fail_server_connection(*task->server, bad_gateway_response, bad_gateway_response_size);
         aio_scheduler_cancel_all(task->task.fd);
         close(task->task.fd);
         http_state_machine_destruct(&task->sm);
-        free(task->uri.buffer);
+        free(task->server);
         free(task);
         return;
     }
     else if (r == 0) {
-        fprintf(stderr, "[Error] Server %s terminated connection\n", task->uri.hostname);
+        fprintf(stderr, "[Error] Server %s terminated connection\n", task->server->uri.hostname);
 
-        fail_server_connection(task->uri, task->cache_entry, bad_gateway_response, bad_gateway_response_size);
+        fail_server_connection(*task->server, bad_gateway_response, bad_gateway_response_size);
         aio_scheduler_cancel_all(task->task.fd);
         close(task->task.fd);
         http_state_machine_destruct(&task->sm);
-        free(task->uri.buffer);
+        free(task->server);
         free(task);
         return;
     }
@@ -226,21 +232,21 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
     while (http_state_machine_step(&task->sm)) {
         switch (task->sm.state) {
             case MALFORMED:
-                // TODO: Schedule write response to clients
                 fprintf(stderr, "[Error] Server resp malformed\n");
+                fail_server_connection(*task->server, bad_gateway_response, bad_gateway_response_size);
                 http_state_machine_destruct(&task->sm);
+                aio_scheduler_cancel_all(task->task.fd);
+                close(task->task.fd);
+                free(task->server);
                 free(task);
                 return;
-            case READ_STATUS_LINE:
-                // TODO: Do smth with status line
-                break;
             case HEADER_AVAILABLE:
                 char *name, *value;
                 size_t name_size, value_size;
                 http_state_machine_get_header_name(&task->sm, task->sm.last_header, &name, &name_size);
                 http_state_machine_get_header_value(&task->sm, task->sm.last_header, &value, &value_size);
 
-                fprintf(stderr, "[Info] %s Field-name: \"", task->uri.hostname);
+                fprintf(stderr, "[Info] %s Field-name: \"", task->server->uri.hostname);
                 for (size_t i = 0; i < name_size; i++) {
                     fprintf(stderr, "%c", name[i]);
                 }
@@ -269,8 +275,9 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                 return;
             case READING_REQUEST_LINE:
             case READ_REQUEST_LINE:
-                // TODO: Unreachable
+                // Unreachable
                 break;
+            case READ_STATUS_LINE:
             case READING_STATUS_LINE:
             case READING_HEADER:
                 break;
