@@ -8,12 +8,11 @@
 #include <errno.h>
 #include "scheduler/aio_scheduler.h"
 
-#define CHECKUP_TIMEOUT 2 * 1000 // ms
-
 aio_scheduler_t aio_scheduler_construct() {
     aio_scheduler_t ret = {
                             .fds = (vector_pollfd_t) VECTOR_INITIALIZER,
                             .task_lists = (vector_task_list_t) VECTOR_INITIALIZER,
+                            .timers = (vector_timer_t) VECTOR_INITIALIZER,
                             .fdToIndex = (map_int_size_t) HASHMAP_INITIALIZER
                           };
     ret.pending_tasks = task_list_construct();
@@ -24,33 +23,33 @@ aio_scheduler_t aio_scheduler_construct() {
 static void delegate(aio_scheduler_t *sched, task_t *task) {
     vector_pollfd_t_push(&sched->fds, (struct pollfd)
                                       {
-                                        .fd = task->fd,
+                                        .fd = task->attrs.ctl.fd,
                                         .events = 0,
                                         .revents = 0
                                       });
     vector_task_list_t_push(&sched->task_lists, task_list_construct());
-    map_int_size_t_set(&sched->fdToIndex, task->fd, sched->fds.size - 1);
+    map_int_size_t_set(&sched->fdToIndex, task->attrs.ctl.fd, sched->fds.size - 1);
     
-    if (task->callback) {
-        task->callback(0, 0, task->data);
+    if (task->attrs.ctl.callback) {
+        task->attrs.ctl.callback(0, task->attrs.ctl.data);
     }
 }
 static void undelegate(aio_scheduler_t *sched, task_t *task) {
-    size_t *index = map_int_size_t_get(&sched->fdToIndex, task->fd);
+    size_t *index = map_int_size_t_get(&sched->fdToIndex, task->attrs.ctl.fd);
     if (index == NULL) {
-        if (task->callback) {
-            task->callback(-1, EINVAL, task->data);
+        if (task->attrs.ctl.callback) {
+            task->attrs.ctl.callback(EINVAL, task->attrs.ctl.data);
         }
         return;
     }
 
-    // Cancel all tasks
+    // Cancel all io tasks
     task_list_t *task_list = &sched->task_lists.arr[*index];
     for (task_t *cursor = task_list->first->next; cursor != NULL; cursor = task_list->first->next) {
         task_list_delete(task_list, task_list->first, cursor);
 
-        if (cursor->callback) {
-            cursor->callback(-1, ECANCELED, cursor->data);
+        if (cursor->attrs.io.callback) {
+            cursor->attrs.io.callback(-1, ECANCELED, cursor->attrs.io.data);
         }
     }
     task_list_destruct(task_list);
@@ -72,25 +71,25 @@ static void undelegate(aio_scheduler_t *sched, task_t *task) {
     // Remove mapping
     map_int_size_t_remove(&sched->fdToIndex, sched->fds.arr[*index].fd);
 
-    if (task->callback) {
-        task->callback(0, 0, task->data);
+    if (task->attrs.ctl.callback) {
+        task->attrs.ctl.callback(0, task->attrs.ctl.data);
     }
 }
-static void schedule_pending(aio_scheduler_t *sched, task_t *task) {
-    size_t *index = map_int_size_t_get(&sched->fdToIndex, task->fd);
+static void schedule_io(aio_scheduler_t *sched, task_t *task) {
+    size_t *index = map_int_size_t_get(&sched->fdToIndex, task->attrs.io.fd);
     if (index == NULL){
-        if (task->callback) {
-            task->callback(-1, EINVAL, task->data);
+        if (task->attrs.io.callback) {
+            task->attrs.io.callback(-1, EINVAL, task->attrs.io.data);
         }
         return;
     }
 
-    task->written = 0;
+    task->attrs.io.written = 0;
 
     struct pollfd *fd = &sched->fds.arr[*index];
     task_list_t *tasks = &sched->task_lists.arr[*index];
 
-    if (!task->as_first) {
+    if (!task->attrs.io.as_first) {
         task_list_append(tasks, task);
     }
     else {
@@ -107,18 +106,18 @@ static void schedule_pending(aio_scheduler_t *sched, task_t *task) {
 }
 
 static bool serve_read_task(task_t *task, ssize_t *res, int *err) {
-    *res = read(task->fd, task->buffer, task->size);
+    *res = read(task->attrs.io.fd, task->attrs.io.buffer, task->attrs.io.size);
     *err = errno;
     return true;
 }
 static bool serve_write_task(task_t *task, ssize_t *res, int *err) {
-    *res = write(task->fd, task->buffer, task->size);
+    *res = write(task->attrs.io.fd, task->attrs.io.buffer, task->attrs.io.size);
     *err = errno;
 
     if (*res >= 0) {
-        task->written += (size_t) *res;
+        task->attrs.io.written += (size_t) *res;
         // Write had completed
-        if (task->written == task->size) {
+        if (task->attrs.io.written == task->attrs.io.size) {
             return true;
         }
         // Write hadn't completed
@@ -153,8 +152,10 @@ static void process_pending_tasks(aio_scheduler_t *sched) {
             case UNDELEGATE:
                 undelegate(sched, task);
                 break;
+            case ADD_TIMER:
+                break;
             default:
-                schedule_pending(sched, task);
+                schedule_io(sched, task);
                 break;
         }
     }
@@ -164,7 +165,7 @@ void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task) {
     task_list_append(&sched->pending_tasks, task);
 }
 
-static inline void aio_delete_task(struct pollfd *pollfd, task_list_t *tasks, task_t *prev, task_t *this) {
+static inline void aio_delete_io_task(struct pollfd *pollfd, task_list_t *tasks, task_t *prev, task_t *this) {
     task_list_delete(tasks, prev, this);
 
     if (tasks->reads_amount == 0) {
@@ -175,7 +176,7 @@ static inline void aio_delete_task(struct pollfd *pollfd, task_list_t *tasks, ta
     }
 }
 
-static void aio_proceed_tasks(struct pollfd *pollfd, task_list_t *tasks) {
+static void aio_proceed_io_tasks(struct pollfd *pollfd, task_list_t *tasks) {
     bool written = false;
     bool readen = false;
 
@@ -215,8 +216,10 @@ static void aio_proceed_tasks(struct pollfd *pollfd, task_list_t *tasks) {
                 break;
         }
         if (complete) {
-            aio_delete_task(pollfd, tasks, prev, cursor);
-            cursor->callback(res, err, cursor->data);
+            aio_delete_io_task(pollfd, tasks, prev, cursor);
+            if (cursor->attrs.io.callback) {
+                cursor->attrs.io.callback(res, err, cursor->attrs.io.data);
+            }
             cursor = prev->next;
         }
         else {
@@ -233,7 +236,7 @@ void aio_scheduler_proceed(aio_scheduler_t *sched) {
     poll(sched->fds.arr, sched->fds.size, -1);
 
     for (size_t i = 0; i < sched->fds.size; i++) {
-        aio_proceed_tasks(&sched->fds.arr[i], &sched->task_lists.arr[i]);
+        aio_proceed_io_tasks(&sched->fds.arr[i], &sched->task_lists.arr[i]);
     }
 }
 

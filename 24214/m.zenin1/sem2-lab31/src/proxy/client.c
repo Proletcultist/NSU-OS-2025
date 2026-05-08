@@ -13,10 +13,10 @@
 #include "proxy/responses.h"
 #include "cache/cache.h"
 
-static void client_early_cleanup_callback(ssize_t r, int err, void *udata) {
+static void client_early_cleanup_callback(int err, void *udata) {
     process_request_task_t *task = udata;
     http_state_machine_destruct(&task->sm);
-    close(task->task.fd);
+    close(task->task.attrs.io.fd);
     free(task->client);
     free(task);
 }
@@ -35,9 +35,11 @@ static void early_respond_error_callback(ssize_t r, int err, void *udata) {
     task->task = (task_t)
                  {
                      .type = UNDELEGATE,
-                     .fd = task->task.fd,
-                     .data = task,
-                     .callback = client_early_cleanup_callback
+                     .attrs.ctl = {
+                         .fd = task->task.attrs.io.fd,
+                         .data = task,
+                         .callback = client_early_cleanup_callback
+                     }
                  };
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
 }
@@ -47,9 +49,11 @@ static void client_early_silent_disconnect(process_request_task_t *task) {
     task->task = (task_t)
                  {
                      .type = UNDELEGATE,
-                     .fd = task->task.fd,
-                     .data = task,
-                     .callback = client_early_cleanup_callback
+                     .attrs.ctl = {
+                         .fd = task->task.attrs.io.fd,
+                         .data = task,
+                         .callback = client_early_cleanup_callback
+                     }
                  };
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
 }
@@ -59,20 +63,22 @@ static void client_early_respond_error(process_request_task_t *task) {
     task->task = (task_t)
                  {
                      .type = WRITE_REQUEST,
-                     .as_first = false,
-                     .fd = task->client->fd,
-                     .buffer = task->msg,
-                     .size = task->msg_size,
-                     .data = task,
-                     .callback = early_respond_error_callback
+                     .attrs.io = {
+                         .as_first = false,
+                         .fd = task->client->fd,
+                         .buffer = task->msg,
+                         .size = task->msg_size,
+                         .data = task,
+                         .callback = early_respond_error_callback
+                     }
                  };
 
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
 }
 
-static void client_cleanup_callback(ssize_t r, int err, void *udata) {
+static void client_cleanup_callback(int err, void *udata) {
     send_to_client_task_t *task = udata;
-    close(task->task.fd);
+    close(task->task.attrs.io.fd);
     free(task->client);
     free(task);
 }
@@ -91,9 +97,11 @@ static void respond_error_callback(ssize_t r, int err, void *udata) {
     task->task = (task_t)
                  {
                      .type = UNDELEGATE,
-                     .fd = task->task.fd,
-                     .data = task,
-                     .callback = client_cleanup_callback
+                     .attrs.ctl = {
+                         .fd = task->task.attrs.io.fd,
+                         .data = task,
+                         .callback = client_cleanup_callback
+                     }
                  };
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
 }
@@ -104,16 +112,17 @@ void client_respond_error(proxy_client_t *client, char *msg, size_t msg_size) {
     send_to_client_task_t *write_error_task = malloc(sizeof(send_to_client_task_t));
     *write_error_task = (send_to_client_task_t)
                         {
-                            .task = (task_t)
-                                    {
-                                        .type = WRITE_REQUEST,
-                                        .as_first = false,
-                                        .fd = client->fd,
-                                        .buffer = msg,
-                                        .size = msg_size,
-                                        .data = write_error_task,
-                                        .callback = respond_error_callback
-                                    },
+                            .task = {
+                                .type = WRITE_REQUEST,
+                                .attrs.io = {
+                                    .as_first = false,
+                                    .fd = client->fd,
+                                    .buffer = msg,
+                                    .size = msg_size,
+                                    .data = write_error_task,
+                                    .callback = respond_error_callback
+                                }
+                            },
                             .client = client
                         };
 
@@ -243,7 +252,7 @@ void process_request_callback(ssize_t r, int err, void *udata) {
         return;
     }
 
-    http_state_machine_alloc(&task->sm, &task->task.buffer, &task->task.size);
+    http_state_machine_alloc(&task->sm, &task->task.attrs.io.buffer, &task->task.attrs.io.size);
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
 }
 

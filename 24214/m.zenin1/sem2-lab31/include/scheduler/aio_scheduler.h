@@ -1,5 +1,6 @@
 #include <poll.h>
 #include "scheduler/task_list.h"
+#include "scheduler/timer.h"
 
 #define NAME vector_pollfd_t 
 #define TYPE struct pollfd
@@ -11,6 +12,14 @@
 
 #define NAME vector_task_list_t
 #define TYPE task_list_t
+#define VECTOR_DECL
+#include "template/vector.h"
+#undef VECTOR_DECL
+#undef NAME
+#undef TYPE
+
+#define NAME vector_timer_t
+#define TYPE timer_t
 #define VECTOR_DECL
 #include "template/vector.h"
 #undef VECTOR_DECL
@@ -32,6 +41,7 @@ typedef struct aio_scheduler {
 
     vector_pollfd_t fds;
     vector_task_list_t task_lists;
+    vector_timer_t timers;
 
     task_list_t pending_tasks;
 } aio_scheduler_t;

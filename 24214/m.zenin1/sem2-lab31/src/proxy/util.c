@@ -11,7 +11,7 @@
 #include "proxy/client.h"
 #include "http.h"
 
-void free_callback(ssize_t r, int err, void *udata) {
+void free_callback(int err, void *udata) {
     free(udata);
 }
 
