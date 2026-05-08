@@ -11,7 +11,7 @@
 #include "proxy/client.h"
 #include "proxy/responses.h"
 
-static void server_cleanup_callback(ssize_t r, int err, void *udata) {
+static void server_cleanup_callback(int err, void *udata) {
     server_connection_task_t *task = udata;
     close(task->server->fd);
     free(task->server->cache_entry);
@@ -38,8 +38,10 @@ static void fail_server_connection(server_connection_task_t *task, char *msg, si
     task->task = (task_t)
                  {
                      .type = UNDELEGATE,
-                     .fd = task->task.fd,
-                     .callback = server_cleanup_callback
+                     .attrs.ctl = {
+                         .fd = task->task.attrs.io.fd,
+                         .callback = server_cleanup_callback
+                     }
                  };
     aio_scheduler_schedule(task->server->sched, (task_t*) task);
 }
@@ -73,18 +75,18 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
             try_connect_to_server_task_t *connect_task = malloc(sizeof(try_connect_to_server_task_t));
             *connect_task = (try_connect_to_server_task_t)
                             {
-                                .server_task = (server_connection_task_t)
-                                               {
-                                                .task = (task_t)
-                                                        {
-                                                            .type = WAIT_FOR_CONNECTION,
-                                                            .fd = server_fd,
-                                                            .as_first = true,
-                                                            .data = connect_task,
-                                                            .callback = try_connect_callback
-                                                        },
-                                                .server = server
-                                               },
+                                .server_task = {
+                                    .task = {
+                                        .type = WAIT_FOR_CONNECTION,
+                                        .attrs.io = {
+                                            .fd = server_fd,
+                                            .as_first = true,
+                                            .data = connect_task,
+                                            .callback = try_connect_callback
+                                        }
+                                },
+                                .server = server
+                               },
                                 .first = res,
                                 .next_try = current_try->ai_next
                             };
@@ -112,8 +114,10 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
     *delegate_task = (task_t)
                      {
                          .type = DELEGATE,
-                         .fd = server_fd,
-                         .callback = free_callback
+                         .attrs.ctl = {
+                             .fd = server_fd,
+                             .callback = free_callback
+                         }
                      };
     aio_scheduler_schedule(sched, delegate_task);
 
@@ -121,21 +125,21 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
     request_writing_task_t *write_req_task = malloc(sizeof(request_writing_task_t));
     *write_req_task = (request_writing_task_t)
                       {
-                          .server_task = (server_connection_task_t)
-                                         {
-                                          .task = (task_t)
-                                                  {
-                                                      .type = WRITE_REQUEST,
-                                                      .as_first = false,
-                                                      .fd = server_fd,
-                                                      .data = write_req_task,
-                                                      .callback = write_request_callback
-                                                  },
-                                          .server = server
-                                         }
+                          .server_task = {
+                              .task = {
+                                  .type = WRITE_REQUEST,
+                                  .attrs.io = {
+                                      .as_first = false,
+                                      .fd = server_fd,
+                                      .data = write_req_task,
+                                      .callback = write_request_callback
+                                  }
+                              },
+                              .server = server
+                          }
                       };
-    generate_request((char**) &write_req_task->server_task.task.buffer,
-                     &write_req_task->server_task.task.size,
+    generate_request((char**) &write_req_task->server_task.task.attrs.io.buffer,
+                     &write_req_task->server_task.task.attrs.io.size,
                      uri);
     aio_scheduler_schedule(sched, (task_t*) write_req_task);
 
@@ -143,24 +147,24 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
     response_analysis_task_t *read_res_task = malloc(sizeof(response_analysis_task_t));
     *read_res_task = (response_analysis_task_t)
                      {
-                         .server_task = (server_connection_task_t)
-                                        {
-                                            .task = (task_t)
-                                                    {
-                                                        .type = READ_REQUEST,
-                                                        .as_first = false,
-                                                        .fd = server_fd,
-                                                        .data = read_res_task,
-                                                        .callback = analyze_response_callback
-                                                    },
-                                            .server = server
-                                        },
+                         .server_task = {
+                            .task = {
+                                .type = READ_REQUEST,
+                                .attrs.io = {
+                                    .as_first = false,
+                                    .fd = server_fd,
+                                    .data = read_res_task,
+                                    .callback = analyze_response_callback
+                                }
+                            },
+                            .server = server
+                         },
                          .content_length = 0,
                          .sm = HTTP_STATE_MACHINE_RES_INITIALIZER
                      };
     http_state_machine_alloc(&read_res_task->sm,
-                             &read_res_task->server_task.task.buffer,
-                             &read_res_task->server_task.task.size);
+                             &read_res_task->server_task.task.attrs.io.buffer,
+                             &read_res_task->server_task.task.attrs.io.size);
     aio_scheduler_schedule(sched, (task_t*) read_res_task);
 }
 
@@ -168,7 +172,7 @@ void try_connect_callback(ssize_t r, int err, void *udata) {
     try_connect_to_server_task_t *task = udata;
 
     socklen_t len = sizeof(err);
-    getsockopt(task->server_task.task.fd, SOL_SOCKET, SO_ERROR, &err, &len);
+    getsockopt(task->server_task.task.attrs.io.fd, SOL_SOCKET, SO_ERROR, &err, &len);
 
     if (err == 0) {
         fprintf(stderr, "[Info] Connected to %s successfully\n", task->server_task.server->uri.hostname);
@@ -180,7 +184,7 @@ void try_connect_callback(ssize_t r, int err, void *udata) {
         int connect_res = -1;
         struct addrinfo *current_try = task->next_try;
         while (connect_res < 0 && current_try != NULL) {
-            connect_res = connect(task->server_task.task.fd, current_try->ai_addr, current_try->ai_addrlen);
+            connect_res = connect(task->server_task.task.attrs.io.fd, current_try->ai_addr, current_try->ai_addrlen);
 
             // Connection in progress
             if (connect_res < 0 && errno == EINPROGRESS) {
@@ -296,6 +300,6 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
         }
     }
 
-    http_state_machine_alloc(&task->sm, &task->server_task.task.buffer, &task->server_task.task.size);
+    http_state_machine_alloc(&task->sm, &task->server_task.task.attrs.io.buffer, &task->server_task.task.attrs.io.size);
     aio_scheduler_schedule(task->server_task.server->sched, (task_t*) task);
 }

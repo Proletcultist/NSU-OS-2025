@@ -23,7 +23,7 @@ static void accept_connection(ssize_t r, int err, void *udata) {
 
     struct sockaddr connected_addr;
     socklen_t connected_len = sizeof(connected_addr);
-    int fd = accept(task->fd, &connected_addr, &connected_len);
+    int fd = accept(task->attrs.io.fd, &connected_addr, &connected_len);
 
     int flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
@@ -48,8 +48,10 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     *delegate_task = (task_t)
                      {
                          .type = DELEGATE,
-                         .fd = fd,
-                         .callback = free_callback
+                         .attrs.ctl = {
+                             .fd = fd,
+                             .callback = free_callback
+                         }
                      };
 
     process_request_task_t *req_task = malloc(sizeof(process_request_task_t));
@@ -58,10 +60,12 @@ static void accept_connection(ssize_t r, int err, void *udata) {
                     .task = (task_t) 
                             {
                              .type = READ_REQUEST,
-                             .as_first = false,
-                             .fd = fd,
-                             .data = req_task,
-                             .callback = process_request_callback
+                             .attrs.io = {
+                                 .as_first = false,
+                                 .fd = fd,
+                                 .data = req_task,
+                                 .callback = process_request_callback
+                             }
                             },
                     .client = client,
                     .bytes_received = 0,
@@ -69,7 +73,7 @@ static void accept_connection(ssize_t r, int err, void *udata) {
                     .bad_request = false
                 };
     req_task->sm.discarding = true;
-    http_state_machine_alloc(&req_task->sm, &req_task->task.buffer, &req_task->task.size);
+    http_state_machine_alloc(&req_task->sm, &req_task->task.attrs.io.buffer, &req_task->task.attrs.io.size);
 
     aio_scheduler_schedule(&sched, delegate_task);
     aio_scheduler_schedule(&sched, (task_t*) req_task);
@@ -97,15 +101,19 @@ void start_proxy(struct in_addr ip, in_port_t port) {
 
     task_t delegate_task = {
                               .type = DELEGATE,
-                              .fd = listening,
-                              .callback = NULL
+                              .attrs.ctl = {
+                                  .fd = listening,
+                                  .callback = NULL
+                              }
                            };
     task_t accept_task =   {
                               .type = ACCEPT_CONNECTION_REQUESTS,
-                              .as_first = false,
-                              .fd = listening,
-                              .data = &accept_task,
-                              .callback = accept_connection
+                              .attrs.io = {
+                                  .as_first = false,
+                                  .fd = listening,
+                                  .data = &accept_task,
+                                  .callback = accept_connection
+                              }
                            };
 
     aio_scheduler_schedule(&sched, &delegate_task);
