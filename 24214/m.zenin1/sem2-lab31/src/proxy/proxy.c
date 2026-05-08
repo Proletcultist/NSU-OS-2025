@@ -14,6 +14,9 @@
 #include "proxy/responses.h"
 #include "cache/cache.h"
 #include "proxy/client.h"
+#include "proxy/util.h"
+
+static aio_scheduler_t sched;
 
 static void accept_connection(ssize_t r, int err, void *udata) {
     task_t *task = udata;
@@ -26,7 +29,12 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
     proxy_client_t *client = malloc(sizeof(proxy_client_t));
-    client->state = CLIENT_CONNECTED;
+    *client = (proxy_client_t)
+              {
+                  .state = CLIENT_CONNECTED,
+                  .fd = fd,
+                  .sched = &sched
+              };
     if (connected_addr.sa_family == AF_INET) {
         inet_ntop(AF_INET, &((struct sockaddr_in*) &connected_addr)->sin_addr, client->client_ip, INET_ADDRSTRLEN);
         fprintf(stderr, "[Info] Connected: %s\n", client->client_ip);
@@ -36,28 +44,36 @@ static void accept_connection(ssize_t r, int err, void *udata) {
         client->client_ip[sizeof(client->client_ip - 1)] = '\0';
     }
 
-    request_analysis_task_t *read_req_task = malloc(sizeof(request_analysis_task_t));
-    read_req_task->client = client;
-    read_req_task->bytes_received = 0;
-    read_req_task->sm = HTTP_STATE_MACHINE_REQ_INITIALIZER;
-    read_req_task->sm.discarding = true;
-    read_req_task->bad_request = false;
-    void *buffer;
-    size_t size;
-    http_state_machine_alloc(&read_req_task->sm, &buffer, &size);
-    read_req_task->task = (task_t)
-                          {
-                              .type = READ_REQUEST,
-                              .fd = fd,
-                              .buffer = buffer,
-                              .size = size,
-                              .data = read_req_task,
-                              .timeout = 10.0,
-                              .callback = analyze_request_callback
-                          };
+    task_t *delegate_task = malloc(sizeof(task_t));
+    *delegate_task = (task_t)
+                     {
+                         .type = DELEGATE,
+                         .fd = fd,
+                         .callback = free_callback
+                     };
 
-    aio_scheduler_schedule((task_t*) read_req_task, false);
-    aio_scheduler_schedule(task, false);
+    process_request_task_t *req_task = malloc(sizeof(process_request_task_t));
+    *req_task = (process_request_task_t)
+                {
+                    .task = (task_t) 
+                            {
+                             .type = READ_REQUEST,
+                             .as_first = false,
+                             .fd = fd,
+                             .data = req_task,
+                             .callback = process_request_callback
+                            },
+                    .client = client,
+                    .bytes_received = 0,
+                    .sm = HTTP_STATE_MACHINE_REQ_INITIALIZER,
+                    .bad_request = false
+                };
+    req_task->sm.discarding = true;
+    http_state_machine_alloc(&req_task->sm, &req_task->task.buffer, &req_task->task.size);
+
+    aio_scheduler_schedule(&sched, delegate_task);
+    aio_scheduler_schedule(&sched, (task_t*) req_task);
+    aio_scheduler_schedule(&sched, task);
 }
 
 
@@ -77,19 +93,25 @@ void start_proxy(struct in_addr ip, in_port_t port) {
         return;
     }
 
-    task_t accept_task;
-    accept_task = (task_t) 
-                  {
-                     .type = ACCEPT_CONNECTION_REQUESTS,
-                     .fd = listening,
-                     .data = &accept_task,
-                     .timeout = NAN,
-                     .callback = accept_connection
-                  };
+    sched = aio_scheduler_construct();
 
-    aio_scheduler_schedule(&accept_task, false);
+    task_t delegate_task = {
+                              .type = DELEGATE,
+                              .fd = listening,
+                              .callback = NULL
+                           };
+    task_t accept_task =   {
+                              .type = ACCEPT_CONNECTION_REQUESTS,
+                              .as_first = false,
+                              .fd = listening,
+                              .data = &accept_task,
+                              .callback = accept_connection
+                           };
+
+    aio_scheduler_schedule(&sched, &delegate_task);
+    aio_scheduler_schedule(&sched, &accept_task);
 
     while (true) {
-        aio_scheduler_proceed();
+        aio_scheduler_proceed(&sched);
     }
 }

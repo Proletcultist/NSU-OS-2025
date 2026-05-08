@@ -5,21 +5,21 @@
 #include <sys/types.h>
 
 typedef enum task_type {
+    DELEGATE,
     ACCEPT_CONNECTION_REQUESTS,
     WAIT_FOR_CONNECTION,
     READ_REQUEST,
-    WRITE_REQUEST
+    WRITE_REQUEST,
+    UNDELEGATE
 } task_type_t;
 
 typedef struct task {
     task_type_t type;
+    bool as_first;
 
     int fd;
     void *buffer;
     size_t size;
-
-    time_t last_update;
-    double timeout;
 
     void *data;
     void (*callback)(ssize_t, int, void*);

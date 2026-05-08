@@ -13,8 +13,16 @@
 #include "proxy/responses.h"
 #include "cache/cache.h"
 
-void respond_error_callback(ssize_t r, int err, void *udata) {
-    task_t *task = udata;
+static void client_early_cleanup_callback(ssize_t r, int err, void *udata) {
+    process_request_task_t *task = udata;
+    http_state_machine_destruct(&task->sm);
+    close(task->task.fd);
+    free(task->client);
+    free(task);
+}
+
+static void early_respond_error_callback(ssize_t r, int err, void *udata) {
+    process_request_task_t *task = udata;
 
     // Check for errors or connection closed
     if (r < 0) {
@@ -24,39 +32,115 @@ void respond_error_callback(ssize_t r, int err, void *udata) {
         fprintf(stderr, "[Error] Client terminated connection\n");
     }
 
-    close(task->fd);
+    task->task = (task_t)
+                 {
+                     .type = UNDELEGATE,
+                     .fd = task->task.fd,
+                     .data = task,
+                     .callback = client_early_cleanup_callback
+                 };
+    aio_scheduler_schedule(task->client->sched, (task_t*) task);
+}
+
+static void client_early_silent_disconnect(process_request_task_t *task) {
+    task->client->state = CLIENT_DISCONNECTED;
+    task->task = (task_t)
+                 {
+                     .type = UNDELEGATE,
+                     .fd = task->task.fd,
+                     .data = task,
+                     .callback = client_early_cleanup_callback
+                 };
+    aio_scheduler_schedule(task->client->sched, (task_t*) task);
+}
+static void client_early_respond_error(process_request_task_t *task) {
+    task->client->state = CLIENT_DISCONNECTED;
+
+    task->task = (task_t)
+                 {
+                     .type = WRITE_REQUEST,
+                     .as_first = false,
+                     .fd = task->client->fd,
+                     .buffer = task->msg,
+                     .size = task->msg_size,
+                     .data = task,
+                     .callback = early_respond_error_callback
+                 };
+
+    aio_scheduler_schedule(task->client->sched, (task_t*) task);
+}
+
+static void client_cleanup_callback(ssize_t r, int err, void *udata) {
+    send_to_client_task_t *task = udata;
+    close(task->task.fd);
+    free(task->client);
     free(task);
 }
 
-void analyze_request_callback(ssize_t r, int err, void *udata) {
-    request_analysis_task_t *task = udata;
+static void respond_error_callback(ssize_t r, int err, void *udata) {
+    send_to_client_task_t *task = udata;
+
+    // Check for errors or connection closed
+    if (r < 0) {
+        fprintf(stderr, "[Error] Error while trying to write: %s\n", strerror(err));
+    }
+    else if (r == 0) {
+        fprintf(stderr, "[Error] Client terminated connection\n");
+    }
+
+    task->task = (task_t)
+                 {
+                     .type = UNDELEGATE,
+                     .fd = task->task.fd,
+                     .data = task,
+                     .callback = client_cleanup_callback
+                 };
+    aio_scheduler_schedule(task->client->sched, (task_t*) task);
+}
+
+void client_respond_error(proxy_client_t *client, char *msg, size_t msg_size) {
+    client->state = CLIENT_DISCONNECTED;
+
+    send_to_client_task_t *write_error_task = malloc(sizeof(send_to_client_task_t));
+    *write_error_task = (send_to_client_task_t)
+                        {
+                            .task = (task_t)
+                                    {
+                                        .type = WRITE_REQUEST,
+                                        .as_first = false,
+                                        .fd = client->fd,
+                                        .buffer = msg,
+                                        .size = msg_size,
+                                        .data = write_error_task,
+                                        .callback = respond_error_callback
+                                    },
+                            .client = client
+                        };
+
+    aio_scheduler_schedule(client->sched, (task_t*) write_error_task);
+}
+
+void process_request_callback(ssize_t r, int err, void *udata) {
+    process_request_task_t *task = udata;
 
     // Check for errors or connection closed
     if (r < 0) {
         fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->client->client_ip, strerror(err));
-
-        close(task->task.fd);
-        http_state_machine_destruct(&task->sm);
-        free(task->client);
-        free(task);
-        return;
     }
     else if (r == 0) {
         fprintf(stderr, "[Error] Client %s terminated connection\n", task->client->client_ip);
-
-        close(task->task.fd);
-        http_state_machine_destruct(&task->sm);
-        free(task->client);
-        free(task);
+    }
+    if (r <= 0) {
+        client_early_silent_disconnect(task);
         return;
     }
 
+    // Request is too big
     task->bytes_received += (size_t) r;
     if (task->bytes_received > MAX_HEADERS_SIZE) {
-        schedule_error_response(task->task.fd, bad_request_response, bad_request_response_size);
-        http_state_machine_destruct(&task->sm);
-        free(task->client);
-        free(task);
+        task->msg = bad_request_response;
+        task->msg_size = bad_request_response_size;
+        client_early_respond_error(task);
         return;
     }
 
@@ -64,10 +148,9 @@ void analyze_request_callback(ssize_t r, int err, void *udata) {
     while (http_state_machine_step(&task->sm)) {
         switch (task->sm.state) {
             case MALFORMED:
-                schedule_error_response(task->task.fd, bad_request_response, bad_request_response_size);
-                http_state_machine_destruct(&task->sm);
-                free(task->client);
-                free(task);
+                task->msg = bad_request_response;
+                task->msg_size = bad_request_response_size;
+                client_early_respond_error(task);
                 return;
             case READ_REQUEST_LINE:
                 fprintf(stderr, "[Info] %s Parsed hostname: \"%s\" port: \"%s\", path: \"%s\"\n", task->client->client_ip, task->sm.uri.hostname, task->sm.uri.port, task->sm.uri.path);
@@ -117,7 +200,7 @@ void analyze_request_callback(ssize_t r, int err, void *udata) {
                 break;
             case COMPLETE:
                 if (task->bad_request) {
-                    schedule_error_response(task->task.fd, task->msg, task->msg_size);
+                    client_early_respond_error(task);
                 }
                 else {
                     cache_entry_t *entry = cache_lookup(task->sm.uri);
@@ -126,22 +209,21 @@ void analyze_request_callback(ssize_t r, int err, void *udata) {
 
                         cache_entry_t *new_entry = malloc(sizeof(cache_entry_t));
                         *new_entry = CACHE_ENTRY_INITIALIZER;
-                        cache_entry_add_pending(new_entry, task->task.fd);
+                        cache_entry_add_pending(new_entry, task->client);
                         cache_enchache(task->sm.uri, new_entry);
 
-                        establish_connect_with_server(task->sm.uri, new_entry);
+                        establish_connect_with_server(task->client->sched, task->sm.uri, new_entry);
 
                         // Delete uri from state machine, so it will not deallocate it
                         task->sm.uri.buffer = NULL;
                     }
                     else {
                         fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client->client_ip, task->sm.uri.hostname);
+                        // TODO: Suck all the cache
                     }
+                    http_state_machine_destruct(&task->sm);
+                    free(task);
                 }
-
-                http_state_machine_destruct(&task->sm);
-                free(task->client);
-                free(task);
                 return;
             case READ_STATUS_LINE:
             case READING_STATUS_LINE:
@@ -155,25 +237,13 @@ void analyze_request_callback(ssize_t r, int err, void *udata) {
 
     // Line is too big
     if (task->sm.data.size - task->sm.analyzed > MAX_LINE_SIZE) {
-        schedule_error_response(task->task.fd, bad_request_response, bad_request_response_size);
-        http_state_machine_destruct(&task->sm);
-        free(task->client);
-        free(task);
+        task->msg = bad_request_response;
+        task->msg_size = bad_request_response_size;
+        client_early_respond_error(task);
         return;
     }
 
-    void *buffer;
-    size_t size;
-    http_state_machine_alloc(&task->sm, &buffer, &size);
-    task->task = (task_t)
-                 {
-                     .type = READ_REQUEST,
-                     .fd = task->task.fd,
-                     .buffer = buffer,
-                     .size = size,
-                     .data = task,
-                     .callback = analyze_request_callback
-                 };
-    aio_scheduler_schedule((task_t*) task, false);
+    http_state_machine_alloc(&task->sm, &task->task.buffer, &task->task.size);
+    aio_scheduler_schedule(task->client->sched, (task_t*) task);
 }
 
