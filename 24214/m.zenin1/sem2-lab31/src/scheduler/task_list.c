@@ -28,6 +28,9 @@ void task_list_append(task_list_t *tl, task_t *task) {
         case WAIT_FOR_CONNECTION:
             tl->writes_amount++;
             break;
+        case DELEGATE:
+        case UNDELEGATE:
+            break;
     }
 }
 
@@ -46,6 +49,9 @@ void task_list_add_first(task_list_t *tl, task_t *task) {
         case WRITE_REQUEST:
         case WAIT_FOR_CONNECTION:
             tl->writes_amount++;
+            break;
+        case DELEGATE:
+        case UNDELEGATE:
             break;
     }
 }
@@ -67,6 +73,9 @@ void task_list_delete(task_list_t *tl, task_t *prev, task_t *this) {
         case WRITE_REQUEST:
         case WAIT_FOR_CONNECTION:
             tl->writes_amount--;
+            break;
+        case DELEGATE:
+        case UNDELEGATE:
             break;
     }
 }

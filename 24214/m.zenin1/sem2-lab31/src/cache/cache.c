@@ -3,14 +3,9 @@
 
 static map_uri_cache_entry_ptr_t cache = (map_uri_cache_entry_ptr_t) HASHMAP_INITIALIZER;
 
-void cache_entry_add_pending(cache_entry_t *entry, int fd) {
-    pending_client_t *new = malloc(sizeof(pending_client_t));
-    *new = (pending_client_t)
-           {
-               .fd = fd,
-               .next = entry->pending
-           };
-    entry->pending = new;
+void cache_entry_add_pending(cache_entry_t *entry, proxy_client_t *client) {
+    client->next = entry->pending;
+    entry->pending = client;
 }
 
 void cache_entry_add_block(cache_entry_t *entry, cache_block_t *block) {

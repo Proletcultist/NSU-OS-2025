@@ -11,6 +11,10 @@
 #include "proxy/client.h"
 #include "http.h"
 
+void free_callback(ssize_t r, int err, void *udata) {
+    free(udata);
+}
+
 void generate_request(char **buffer, size_t *size, uri_t uri) {
     size_t hostname_len = strlen(uri.hostname);
     size_t port_len = strlen(uri.port);
@@ -19,21 +23,6 @@ void generate_request(char **buffer, size_t *size, uri_t uri) {
     *buffer = malloc(*size);
 
     sprintf(*buffer, "GET http://%s:%s%s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\nContent-Lenght: 0\r\n\r\n", uri.hostname, uri.port, uri.path, uri.hostname);
-}
-
-void schedule_error_response(int fd, char *msg, size_t msg_size) {
-    task_t *write_error_task = malloc(sizeof(task_t));
-    *write_error_task = (task_t)
-                        {
-                            .type = WRITE_REQUEST,
-                            .fd = fd,
-                            .buffer = msg,
-                            .size = msg_size,
-                            .data = write_error_task,
-                            .timeout = 10.0,
-                            .callback = respond_error_callback
-                        };
-    aio_scheduler_schedule(write_error_task, false);
 }
 
 bool mem_compare_trimed(char *a, size_t a_size, char *b, size_t b_size) {

@@ -32,9 +32,11 @@ typedef struct aio_scheduler {
 
     vector_pollfd_t fds;
     vector_task_list_t task_lists;
+
+    task_list_t pending_tasks;
 } aio_scheduler_t;
 
-void aio_scheduler_schedule(task_t *task, bool as_first);
-void aio_scheduler_cancel_all(int fd);
-void aio_scheduler_proceed();
-void aio_scheduler_destruct();
+aio_scheduler_t aio_scheduler_construct();
+void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task);
+void aio_scheduler_proceed(aio_scheduler_t *sched);
+void aio_scheduler_destruct(aio_scheduler_t *sched);
