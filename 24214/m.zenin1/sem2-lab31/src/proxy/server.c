@@ -26,57 +26,6 @@ static void server_cleanup_callback(int err, void *udata) {
     free(task);
 }
 
-static void send_error_to_all_clients(proxy_server_t server, char *msg, size_t msg_size) {
-    for (proxy_client_t *cursor = server.cache_entry->pending; cursor != NULL; cursor = cursor->next) {
-        client_health_check_timer_t *timer_task = malloc(sizeof(client_health_check_timer_t));
-        *timer_task = (client_health_check_timer_t)
-                      {
-                          .task.type = ADD_TIMER,
-                          .task.attrs.timer = {
-                              .time = CLIENT_DISCONNECTION_TIMEOUT,
-                              .callback = client_health_check_callback,
-                              .data = timer_task
-                          },
-                          .client = cursor,
-                          .cleanup_client = true,
-                          .last_update = server.sched->loop_time
-                      };
-        cursor->health_check_timer = timer_task;
-
-        client_task_t *send_error_task = malloc(sizeof(client_task_t));
-        send_error_task->client = cursor;
-        client_respond_error(send_error_task, msg, msg_size);
-        aio_scheduler_schedule(cursor->sched, (task_t*) timer_task);
-    }
-}
-
-static void early_fail_server_connection(proxy_server_t server, char *msg, size_t msg_size) {
-    cache_delete(server.uri);
-
-    send_error_to_all_clients(server, msg, msg_size);
-
-    free(server.uri.buffer);
-    free(server.cache_entry);
-}
-
-static void fail_server_connection(server_task_t *task, char *msg, size_t msg_size) {
-    task->server->state = SERVER_DISCONNECTED;
-    cache_delete(task->server->uri);
-
-    send_error_to_all_clients(*task->server, msg, msg_size);
-
-    task->task = (task_t)
-                 {
-                     .type = UNDELEGATE,
-                     .attrs.ctl = {
-                         .fd = task->server->fd,
-                         .data = task,
-                         .callback = server_cleanup_callback
-                     }
-                 };
-    aio_scheduler_schedule(task->server->sched, (task_t*) task);
-}
-
 static bool try_cleanup(proxy_client_t *client) {
     if (client->state != CLIENT_DISCONNECTED) {
         return false;
@@ -176,12 +125,20 @@ static proxy_client_t* send_uncached_to_all_clients(proxy_client_t **clients, ch
     // Create buffer with ref counter, count reference from this function as one of them and increment it whilst scheduling writing on clients
 }
 
-static void interrupt_response_sending(server_task_t *task) {
+static void early_fail_server_connection(proxy_server_t server, char *msg, size_t msg_size) {
+    cache_delete(server.uri);
+
+    send_cached_to_all_clients(&server, &server.cache_entry->pending, msg, msg_size, true);
+
+    free(server.uri.buffer);
+    free(server.cache_entry);
+}
+
+static void fail_server_connection(server_task_t *task, char *msg, size_t msg_size) {
     task->server->state = SERVER_DISCONNECTED;
     cache_delete(task->server->uri);
 
-    proxy_client_t *first_client = task->server->cache_entry->pending;
-    send_cached_to_all_clients(task->server, &first_client, NULL, 0, true);
+    send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, msg, msg_size, true);
 
     task->task = (task_t)
                  {
@@ -213,7 +170,7 @@ static void server_health_check_callback(time_t time, void *udata) {
         }
         // Interrupt response sending
         else if (timer->server->state == SERVER_RECEIVING_BODY) {
-            interrupt_response_sending((server_task_t*) timer);
+            fail_server_connection((server_task_t*) timer, NULL, 0);
         }
         else {
             // Unreachable
