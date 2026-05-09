@@ -31,9 +31,9 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     proxy_client_t *client = malloc(sizeof(proxy_client_t));
     *client = (proxy_client_t)
               {
-                  .state = CLIENT_CONNECTED,
+                  .state = CLIENT_SENDING_REQUEST,
                   .fd = fd,
-                  .sched = &sched
+                  .sched = &sched,
               };
     if (connected_addr.sa_family == AF_INET) {
         inet_ntop(AF_INET, &((struct sockaddr_in*) &connected_addr)->sin_addr, client->client_ip, INET_ADDRSTRLEN);
@@ -57,16 +57,13 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     process_request_task_t *req_task = malloc(sizeof(process_request_task_t));
     *req_task = (process_request_task_t)
                 {
-                    .task = (task_t) 
-                            {
-                             .type = READ_REQUEST,
-                             .attrs.io = {
-                                 .as_first = false,
-                                 .fd = fd,
-                                 .data = req_task,
-                                 .callback = process_request_callback
-                             }
-                            },
+                    .task.type = READ_REQUEST,
+                    .task.attrs.io = {
+                        .as_first = false,
+                        .fd = fd,
+                        .data = req_task,
+                        .callback = process_request_callback
+                    },
                     .client = client,
                     .bytes_received = 0,
                     .sm = HTTP_STATE_MACHINE_REQ_INITIALIZER,
@@ -75,8 +72,24 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     req_task->sm.discarding = true;
     http_state_machine_alloc(&req_task->sm, &req_task->task.attrs.io.buffer, &req_task->task.attrs.io.size);
 
+    client_health_check_timer_t *timer_task = malloc(sizeof(client_health_check_timer_t));
+    *timer_task = (client_health_check_timer_t)
+                  {
+                      .task.type = ADD_TIMER,
+                      .task.attrs.timer = {
+                          .time = CLIENT_SEND_REQUEST_TIMEOUT,
+                          .callback = client_health_check_callback,
+                          .data = timer_task
+                      },
+                      .client = client,
+                      .cleanup_client = true,
+                      .last_update = sched.loop_time
+                  };
+    client->health_check_timer = timer_task;
+
     aio_scheduler_schedule(&sched, delegate_task);
     aio_scheduler_schedule(&sched, (task_t*) req_task);
+    aio_scheduler_schedule(&sched, (task_t*) timer_task);
     aio_scheduler_schedule(&sched, task);
 }
 

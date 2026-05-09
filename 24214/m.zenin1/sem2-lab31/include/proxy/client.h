@@ -1,6 +1,12 @@
 #pragma once
 
+#include <time.h>
 #include "scheduler/aio_scheduler.h"
+
+#define CLIENT_SEND_REQUEST_TIMEOUT     5
+#define CLIENT_READ_CACHED_TIMEOUT      5
+#define CLIENT_WAIT_FOR_DATA_TIMEOUT    7
+#define CLIENT_DISCONNECTION_TIMEOUT    3
 
 #define MAX_HEADERS_SIZE (64 * 1024)    // 64KB
 #define MAX_LINE_SIZE (8 * 1024)    // 8KB
@@ -8,18 +14,39 @@
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 typedef enum proxy_client_state {
-    CLIENT_CONNECTED,
-    CLIENT_DISCONNECTED
+    CLIENT_SENDING_REQUEST,     // Receiving clients' request, if failed or timed out - start disconnection
+    CLIENT_READING_CACHED,      // Reading data from cache, if failed or timed out - start disconnection
+    CLIENT_WAITS_FOR_DATA,      // Waiting for data from server, if timerd out - send error and disconnect
+    CLIENT_DISCONNECTING,       // Don't start disconnection again, but check for timeouts
+    CLIENT_DISCONNECTED         // Don't do anything
 } proxy_client_state_t;
+
+struct client_health_check_timer;
 
 typedef struct proxy_client {
     proxy_client_state_t state;
     int fd;
-    aio_scheduler_t *sched;
     char client_ip[16];
+    aio_scheduler_t *sched;
+
+    struct client_health_check_timer *health_check_timer;
 
     struct proxy_client *next;
 } proxy_client_t;
+
+typedef struct client_task {
+    task_t task;
+    proxy_client_t *client;
+} client_task_t;
+
+typedef struct client_health_check_timer {
+    task_t task;
+    proxy_client_t *client;
+
+    bool cleanup_client;
+    time_t last_update;
+} client_health_check_timer_t;
+
 
 typedef struct process_request_task {
     task_t task;
@@ -33,10 +60,9 @@ typedef struct process_request_task {
     size_t msg_size;
 } process_request_task_t;
 
-typedef struct send_to_client_task {
-    task_t task;
-    proxy_client_t *client;
-} send_to_client_task_t;
+typedef client_task_t send_to_client_task_t;
 
-void client_respond_error(proxy_client_t *client, char *msg, size_t msg_size);
+void client_health_check_callback(time_t time, void *udata);
+void client_silent_disconnect(client_task_t *task);
+void client_respond_error(client_task_t *task, char *msg, size_t msg_size);
 void process_request_callback(ssize_t r, int err, void *udata);

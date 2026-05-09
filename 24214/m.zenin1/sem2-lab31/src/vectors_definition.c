@@ -1,5 +1,6 @@
 #include <poll.h>
 #include "scheduler/task_list.h"
+#include "scheduler/timer.h"
 
 #define NAME vector_byte_t
 #define TYPE char
@@ -40,3 +41,13 @@
 #undef VECTOR_IMPL
 #undef TYPE
 #undef NAME
+
+#define NAME vector_timer_t
+#define TYPE aio_timer_t
+#define VECTOR_DECL
+#define VECTOR_IMPL
+#include "template/vector.h"
+#undef VECTOR_DECL
+#undef VECTOR_IMPL
+#undef NAME
+#undef TYPE
