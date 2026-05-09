@@ -11,6 +11,8 @@
 #include "proxy/client.h"
 #include "proxy/responses.h"
 
+#define SERVER_TIMEOUT 5
+
 static void server_cleanup_callback(int err, void *udata) {
     server_task_t *task = udata;
 
@@ -68,10 +70,161 @@ static void fail_server_connection(server_task_t *task, char *msg, size_t msg_si
                      .type = UNDELEGATE,
                      .attrs.ctl = {
                          .fd = task->server->fd,
+                         .data = task,
                          .callback = server_cleanup_callback
                      }
                  };
     aio_scheduler_schedule(task->server->sched, (task_t*) task);
+}
+
+static bool try_cleanup(proxy_client_t *client) {
+    if (client->state != CLIENT_DISCONNECTED) {
+        return false;
+    }
+
+    client_task_t *task = malloc(sizeof(client_task_t));
+    task->client = client;
+    client_silent_disconnect(task);
+
+    return true;
+}
+
+static void cleanup_disconnected_beg(proxy_client_t **clients) {
+    while (*clients != NULL) {
+        proxy_client_t *next = (*clients)->next;
+        if (try_cleanup(*clients)) {
+            (*clients) = next;
+        }
+        else {
+            break;
+        }
+    }
+}
+
+static void send_task_to_client(proxy_server_t *server, client_task_t *task) {
+    aio_scheduler_schedule(task->client->sched, (task_t*) task);
+
+    // If there is no timer for client - create one
+    if (task->client->health_check_timer == NULL) {
+        client_health_check_timer_t *timer_task = malloc(sizeof(client_health_check_timer_t));
+        *timer_task = (client_health_check_timer_t)
+                      {
+                          .task.type = ADD_TIMER,
+                          .task.attrs.timer = {
+                              .time = CLIENT_WAIT_FOR_DATA_TIMEOUT,
+                              .callback = client_health_check_callback,
+                              .data = timer_task
+                          },
+                          .client = task->client,
+                          .cleanup_client = false,
+                          .last_update = server->sched->loop_time
+                      };
+        task->client->health_check_timer = timer_task;
+        aio_scheduler_schedule(task->client->sched, (task_t*) timer_task);
+    }
+}
+
+// Go through linked list of clients, cleanup disconnected, send data to connected
+// Move *clients to the new start of linked list
+// Return last client in list
+static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_client_t **clients, char *buffer, size_t size, bool last) {
+    cleanup_disconnected_beg(clients);
+
+    void (*callback)(ssize_t, int, void*);
+    if (last) {
+        callback = client_write_cached_last_callback;
+    }
+    else {
+        callback = client_write_cached_callback;
+    }
+
+    // Since *clients is known to be not disconnected or NULL it's ok to init prev like this
+    proxy_client_t *prev = *clients;
+    proxy_client_t *cursor = *clients;
+    while (cursor != NULL) {
+        proxy_client_t *next = cursor->next;
+        if (try_cleanup(cursor)) {
+            prev->next = next;
+            cursor = next;
+            continue;
+        }
+
+        client_task_t *task = malloc(sizeof(client_task_t));
+        *task = (client_task_t)
+                {
+                    .task.type = WRITE_REQUEST,
+                    .task.attrs.io = {
+                        .fd = cursor->fd,
+                        .as_first = false,
+                        .buffer = buffer,
+                        .size = size,
+                        .data = task,
+                        .callback = callback
+                    },
+                    .client = cursor
+                };
+        send_task_to_client(server, task);
+
+        prev = cursor;
+        cursor = cursor->next;
+    }
+
+    return prev;
+}
+
+static proxy_client_t* send_uncached_to_all_clients(proxy_client_t **clients, char *buffer, size_t size, bool last) {
+    // Create buffer with ref counter, count reference from this function as one of them and increment it whilst scheduling writing on clients
+}
+
+static void interrupt_response_sending(server_task_t *task) {
+    task->server->state = SERVER_DISCONNECTED;
+    cache_delete(task->server->uri);
+
+    proxy_client_t *first_client = task->server->cache_entry->pending;
+    send_cached_to_all_clients(task->server, &first_client, NULL, 0, true);
+
+    task->task = (task_t)
+                 {
+                     .type = UNDELEGATE,
+                     .attrs.ctl = {
+                         .fd = task->server->fd,
+                         .data = task,
+                         .callback = server_cleanup_callback
+                     }
+                 };
+    aio_scheduler_schedule(task->server->sched, (task_t*) task);
+}
+
+static void server_health_check_callback(time_t time, void *udata) {
+    server_health_check_timer_t *timer = udata;
+
+    if (timer->server == NULL || timer->server->state == SERVER_DISCONNECTED) {
+        free(timer);
+        return;
+    }
+
+    time_t next_check_time = timer->last_update + SERVER_TIMEOUT;
+    // If time ellapsed - disconnect
+    if (time - timer->last_update >= timer->task.attrs.timer.time || next_check_time < time) {
+        // If we didn't start sending body to clients, send them error
+        if (timer->server->state == SERVER_CONNECTION_IN_PROGRESS ||
+            timer->server->state == SERVER_RECEIVING_HEADERS) {
+            fail_server_connection((server_task_t*) timer, gateway_timeout_response, gateway_timeout_response_size);
+        }
+        // Interrupt response sending
+        else if (timer->server->state == SERVER_RECEIVING_BODY) {
+            interrupt_response_sending((server_task_t*) timer);
+        }
+        else {
+            // Unreachable
+            free(timer);
+            return;
+        }
+    }
+    else {
+        timer->task.attrs.timer.time = next_check_time - time;
+        aio_scheduler_schedule(timer->server->sched, (task_t*) timer);
+    }
 }
 
 void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entry_t *entry) {
@@ -97,12 +250,13 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
 
     struct addrinfo *current_try = res;
     int err = -1;
+    try_connect_to_server_task_t *connect_task = NULL;
     do {
         err = connect(server_fd, current_try->ai_addr, current_try->ai_addrlen);
 
         // Connection in progress
         if (err < 0 && errno == EINPROGRESS) {
-            try_connect_to_server_task_t *connect_task = malloc(sizeof(try_connect_to_server_task_t));
+            connect_task = malloc(sizeof(try_connect_to_server_task_t));
             *connect_task = (try_connect_to_server_task_t)
                             {
                                 .task.type = WAIT_FOR_CONNECTION,
@@ -116,7 +270,6 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
                                 .first = res,
                                 .next_try = current_try->ai_next
                             };
-            aio_scheduler_schedule(sched, (task_t*) connect_task);
             break;
         }
 
@@ -135,8 +288,6 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
         server->state = SERVER_RECEIVING_HEADERS;
     }
 
-    // TODO: Create timer for server
-
     // Schedule delegate server fd
     task_t *delegate_task = malloc(sizeof(task_t));
     *delegate_task = (task_t)
@@ -147,6 +298,19 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
                              .callback = free_callback
                          }
                      };
+
+    server_health_check_timer_t *timer_task = malloc(sizeof(server_health_check_timer_t));
+    *timer_task = (server_health_check_timer_t)
+                  {
+                      .task.type = ADD_TIMER,
+                      .task.attrs.timer = {
+                          .time = SERVER_TIMEOUT,
+                          .callback = server_health_check_callback,
+                          .data = timer_task
+                      },
+                      .server = server,
+                      .last_update = sched->loop_time
+                  };
 
     // Schedule request writing
     request_writing_task_t *write_req_task = malloc(sizeof(request_writing_task_t));
@@ -185,12 +349,21 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
                              &read_res_task->task.attrs.io.size);
 
     aio_scheduler_schedule(sched, delegate_task);
+    if (connect_task != NULL) {
+        aio_scheduler_schedule(sched, (task_t*) connect_task);
+    }
     aio_scheduler_schedule(sched, (task_t*) write_req_task);
     aio_scheduler_schedule(sched, (task_t*) read_res_task);
+    aio_scheduler_schedule(sched, (task_t*) timer_task);
 }
 
 void try_connect_callback(ssize_t r, int err, void *udata) {
     try_connect_to_server_task_t *task = udata;
+    if (task->server->state != SERVER_CONNECTION_IN_PROGRESS) {
+        freeaddrinfo(task->first);
+        free(task);
+        return;
+    }
 
     socklen_t len = sizeof(err);
     getsockopt(task->task.attrs.io.fd, SOL_SOCKET, SO_ERROR, &err, &len);
@@ -311,6 +484,9 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                     printf("%c", task->sm.data.arr[i]);
                 }
                 printf("\n");
+
+                task->server->state = SERVER_RECEIVING_BODY;
+
                 http_state_machine_destruct(&task->sm);
                 free(task);
                 return;

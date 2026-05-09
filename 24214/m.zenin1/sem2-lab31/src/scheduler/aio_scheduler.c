@@ -43,6 +43,9 @@ static void undelegate(aio_scheduler_t *sched, task_t *task) {
         return;
     }
 
+    // Remove mapping
+    map_int_size_t_remove(&sched->fdToIndex, sched->fds.arr[*index].fd);
+
     // Cancel all io tasks
     task_list_t *task_list = &sched->task_lists.arr[*index];
     for (task_t *cursor = task_list->first->next; cursor != NULL; cursor = task_list->first->next) {
@@ -67,9 +70,6 @@ static void undelegate(aio_scheduler_t *sched, task_t *task) {
         sched->fds.size--;
         sched->task_lists.size--;
     }
-
-    // Remove mapping
-    map_int_size_t_remove(&sched->fdToIndex, sched->fds.arr[*index].fd);
 
     if (task->attrs.ctl.callback) {
         task->attrs.ctl.callback(0, task->attrs.ctl.data);
@@ -126,6 +126,12 @@ static bool serve_read_task(task_t *task, ssize_t *res, int *err) {
     return true;
 }
 static bool serve_write_task(task_t *task, ssize_t *res, int *err) {
+    if (task->attrs.io.size == 0) {
+        *res = 0;
+        *err = 0;
+        return true;
+    }
+
     *res = write(task->attrs.io.fd, task->attrs.io.buffer, task->attrs.io.size);
     *err = errno;
 

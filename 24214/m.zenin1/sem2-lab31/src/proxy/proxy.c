@@ -100,7 +100,6 @@ void start_proxy(struct in_addr ip, in_port_t port) {
                                .sin_port = port,
                                .sin_addr = ip};
 
-    // TODO: Propagate error
     if (bind(listening, (struct sockaddr*) &addr, sizeof(addr))) {
         perror("Failed to bind");
         return;
