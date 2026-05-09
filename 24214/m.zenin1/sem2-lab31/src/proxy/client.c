@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -13,16 +14,23 @@
 #include "proxy/responses.h"
 #include "cache/cache.h"
 
-static void client_early_cleanup_callback(int err, void *udata) {
-    process_request_task_t *task = udata;
-    http_state_machine_destruct(&task->sm);
-    close(task->task.attrs.io.fd);
+static void client_cleanup_callback(int err, void *udata) {
+    client_task_t *task = udata;
+
+    close(task->client->fd);
+    if (task->client->health_check_timer != NULL) {
+        task->client->health_check_timer->client = NULL;
+    }
     free(task->client);
     free(task);
 }
 
-static void early_respond_error_callback(ssize_t r, int err, void *udata) {
-    process_request_task_t *task = udata;
+void client_respond_error_callback(ssize_t r, int err, void *udata) {
+    client_task_t *task = udata;
+    if (task->client->state == CLIENT_DISCONNECTED) {
+        free(task);
+        return;
+    }
 
     // Check for errors or connection closed
     if (r < 0) {
@@ -36,101 +44,118 @@ static void early_respond_error_callback(ssize_t r, int err, void *udata) {
                  {
                      .type = UNDELEGATE,
                      .attrs.ctl = {
-                         .fd = task->task.attrs.io.fd,
+                         .fd = task->client->fd,
                          .data = task,
-                         .callback = client_early_cleanup_callback
+                         .callback = client_cleanup_callback
                      }
                  };
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
+
+    task->client->state = CLIENT_DISCONNECTED;
 }
 
-static void client_early_silent_disconnect(process_request_task_t *task) {
-    task->client->state = CLIENT_DISCONNECTED;
+void client_silent_disconnect(client_task_t *task) {
     task->task = (task_t)
                  {
                      .type = UNDELEGATE,
                      .attrs.ctl = {
-                         .fd = task->task.attrs.io.fd,
+                         .fd = task->client->fd,
                          .data = task,
-                         .callback = client_early_cleanup_callback
+                         .callback = client_cleanup_callback
                      }
                  };
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
-}
-static void client_early_respond_error(process_request_task_t *task) {
-    task->client->state = CLIENT_DISCONNECTED;
 
+    task->client->state = CLIENT_DISCONNECTED;
+}
+
+void client_respond_error(client_task_t *task, char *msg, size_t msg_size) {
     task->task = (task_t)
                  {
                      .type = WRITE_REQUEST,
                      .attrs.io = {
                          .as_first = false,
                          .fd = task->client->fd,
-                         .buffer = task->msg,
-                         .size = task->msg_size,
+                         .buffer = msg,
+                         .size = msg_size,
                          .data = task,
-                         .callback = early_respond_error_callback
+                         .callback = client_respond_error_callback
                      }
                  };
 
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
+
+    task->client->state = CLIENT_DISCONNECTING;
 }
 
-static void client_cleanup_callback(int err, void *udata) {
-    send_to_client_task_t *task = udata;
-    close(task->task.attrs.io.fd);
-    free(task->client);
-    free(task);
-}
+void client_health_check_callback(time_t time, void *udata) {
+    client_health_check_timer_t *timer = udata;
 
-static void respond_error_callback(ssize_t r, int err, void *udata) {
-    send_to_client_task_t *task = udata;
-
-    // Check for errors or connection closed
-    if (r < 0) {
-        fprintf(stderr, "[Error] Error while trying to write: %s\n", strerror(err));
-    }
-    else if (r == 0) {
-        fprintf(stderr, "[Error] Client terminated connection\n");
+    // If client is already freed, started waiting for data from server or
+    // disconnected - turn of teh timer
+    if (timer->client == NULL || timer->client->state == CLIENT_DISCONNECTED) {
+        free(timer);
+        return;
     }
 
-    task->task = (task_t)
-                 {
-                     .type = UNDELEGATE,
-                     .attrs.ctl = {
-                         .fd = task->task.attrs.io.fd,
-                         .data = task,
-                         .callback = client_cleanup_callback
-                     }
-                 };
-    aio_scheduler_schedule(task->client->sched, (task_t*) task);
-}
+    // If time ellapsed - disconnect client
+    if (time - timer->last_update >= timer->task.attrs.timer.time) {
+        if (timer->cleanup_client) {
+            client_silent_disconnect((client_task_t*) timer);
+        }
+        else {
+            timer->client->state = CLIENT_DISCONNECTED;
+            free(timer);
+        }
+        return;
+    }
+    // Schedule next timer
+    else {
+        time_t next_check_time = 0;
+        switch (timer->client->state) {
+            case CLIENT_SENDING_REQUEST:
+                next_check_time = timer->last_update + CLIENT_SEND_REQUEST_TIMEOUT;
+                break;
+            case CLIENT_READING_CACHED:
+                next_check_time = timer->last_update + CLIENT_READ_CACHED_TIMEOUT;
+                break;
+            case CLIENT_WAITS_FOR_DATA:
+                next_check_time = timer->last_update + CLIENT_WAIT_FOR_DATA_TIMEOUT;
+                break;
+            case CLIENT_DISCONNECTING:
+                next_check_time = timer->last_update + CLIENT_DISCONNECTION_TIMEOUT;
+                break;
+            case CLIENT_DISCONNECTED:
+                // Unreachable
+                return;
+        }
 
-void client_respond_error(proxy_client_t *client, char *msg, size_t msg_size) {
-    client->state = CLIENT_DISCONNECTED;
-
-    send_to_client_task_t *write_error_task = malloc(sizeof(send_to_client_task_t));
-    *write_error_task = (send_to_client_task_t)
-                        {
-                            .task = {
-                                .type = WRITE_REQUEST,
-                                .attrs.io = {
-                                    .as_first = false,
-                                    .fd = client->fd,
-                                    .buffer = msg,
-                                    .size = msg_size,
-                                    .data = write_error_task,
-                                    .callback = respond_error_callback
-                                }
-                            },
-                            .client = client
-                        };
-
-    aio_scheduler_schedule(client->sched, (task_t*) write_error_task);
+        if (next_check_time < time) {
+            if (timer->cleanup_client) {
+                client_silent_disconnect((client_task_t*) timer);
+            }
+            else {
+                timer->client->state = CLIENT_DISCONNECTED;
+                free(timer);
+            }
+        }
+        else {
+            timer->task.attrs.timer.time = next_check_time - time;
+            aio_scheduler_schedule(timer->client->sched, (task_t*) timer);
+        }
+    }
 }
 
 void process_request_callback(ssize_t r, int err, void *udata) {
     process_request_task_t *task = udata;
+
+    if (task->client->state != CLIENT_SENDING_REQUEST) {
+        http_state_machine_destruct(&task->sm);
+        free(task);
+        return;
+    }
+
+    task->client->health_check_timer->last_update = task->client->sched->loop_time;
 
     // Check for errors or connection closed
     if (r < 0) {
@@ -140,16 +165,16 @@ void process_request_callback(ssize_t r, int err, void *udata) {
         fprintf(stderr, "[Error] Client %s terminated connection\n", task->client->client_ip);
     }
     if (r <= 0) {
-        client_early_silent_disconnect(task);
+        http_state_machine_destruct(&task->sm);
+        client_silent_disconnect((client_task_t*) task);
         return;
     }
 
     // Request is too big
     task->bytes_received += (size_t) r;
     if (task->bytes_received > MAX_HEADERS_SIZE) {
-        task->msg = bad_request_response;
-        task->msg_size = bad_request_response_size;
-        client_early_respond_error(task);
+        http_state_machine_destruct(&task->sm);
+        client_respond_error((client_task_t*) task, bad_request_response, bad_request_response_size);
         return;
     }
 
@@ -157,9 +182,8 @@ void process_request_callback(ssize_t r, int err, void *udata) {
     while (http_state_machine_step(&task->sm)) {
         switch (task->sm.state) {
             case MALFORMED:
-                task->msg = bad_request_response;
-                task->msg_size = bad_request_response_size;
-                client_early_respond_error(task);
+                http_state_machine_destruct(&task->sm);
+                client_respond_error((client_task_t*) task, bad_request_response, bad_request_response_size);
                 return;
             case READ_REQUEST_LINE:
                 fprintf(stderr, "[Info] %s Parsed hostname: \"%s\" port: \"%s\", path: \"%s\"\n", task->client->client_ip, task->sm.uri.hostname, task->sm.uri.port, task->sm.uri.path);
@@ -209,12 +233,18 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                 break;
             case COMPLETE:
                 if (task->bad_request) {
-                    client_early_respond_error(task);
+                    http_state_machine_destruct(&task->sm);
+                    client_respond_error((client_task_t*) task, task->msg, task->msg_size);
                 }
                 else {
                     cache_entry_t *entry = cache_lookup(task->sm.uri);
                     if (entry == NULL) {
                         fprintf(stderr, "[Info] %s Cache miss for %s\n", task->client->client_ip, task->sm.uri.hostname);
+
+                        // Start waiting for data from server and forget about timer - it will be cleaned up
+                        task->client->state = CLIENT_WAITS_FOR_DATA;
+                        task->client->health_check_timer->client = NULL;
+                        task->client->health_check_timer = NULL;
 
                         cache_entry_t *new_entry = malloc(sizeof(cache_entry_t));
                         *new_entry = CACHE_ENTRY_INITIALIZER;
@@ -228,7 +258,7 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                     }
                     else {
                         fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client->client_ip, task->sm.uri.hostname);
-                        // TODO: Suck all the cache
+                        // TODO: Suck all the cache, also, set state
                     }
                     http_state_machine_destruct(&task->sm);
                     free(task);
@@ -246,9 +276,8 @@ void process_request_callback(ssize_t r, int err, void *udata) {
 
     // Line is too big
     if (task->sm.data.size - task->sm.analyzed > MAX_LINE_SIZE) {
-        task->msg = bad_request_response;
-        task->msg_size = bad_request_response_size;
-        client_early_respond_error(task);
+        http_state_machine_destruct(&task->sm);
+        client_respond_error((client_task_t*) task, bad_request_response, bad_request_response_size);
         return;
     }
 

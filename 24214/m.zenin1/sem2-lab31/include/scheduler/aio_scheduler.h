@@ -19,7 +19,7 @@
 #undef TYPE
 
 #define NAME vector_timer_t
-#define TYPE timer_t
+#define TYPE aio_timer_t
 #define VECTOR_DECL
 #include "template/vector.h"
 #undef VECTOR_DECL
@@ -38,6 +38,8 @@
 
 typedef struct aio_scheduler {
     map_int_size_t fdToIndex;
+
+    time_t loop_time;
 
     vector_pollfd_t fds;
     vector_task_list_t task_lists;

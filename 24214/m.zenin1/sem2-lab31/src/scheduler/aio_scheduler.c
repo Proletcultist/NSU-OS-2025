@@ -75,6 +75,21 @@ static void undelegate(aio_scheduler_t *sched, task_t *task) {
         task->attrs.ctl.callback(0, task->attrs.ctl.data);
     }
 }
+
+static void add_timer(aio_scheduler_t *sched, task_t *task) {
+    vector_timer_t_push(&sched->timers, task->attrs.timer);
+    sched->timers.arr[sched->timers.size - 1].time += sched->loop_time;
+
+    // Sift up
+    size_t i = sched->timers.size - 1;
+    while (i > 0 && sched->timers.arr[(i - 1) / 2].time > sched->timers.arr[i].time) {
+        aio_timer_t tmp = sched->timers.arr[(i - 1) / 2];
+        sched->timers.arr[(i - 1) / 2] = sched->timers.arr[i];
+        sched->timers.arr[i] = tmp;
+        i = (i - 1) / 2;
+    }
+}
+
 static void schedule_io(aio_scheduler_t *sched, task_t *task) {
     size_t *index = map_int_size_t_get(&sched->fdToIndex, task->attrs.io.fd);
     if (index == NULL){
@@ -153,6 +168,7 @@ static void process_pending_tasks(aio_scheduler_t *sched) {
                 undelegate(sched, task);
                 break;
             case ADD_TIMER:
+                add_timer(sched, task);
                 break;
             default:
                 schedule_io(sched, task);
@@ -173,6 +189,45 @@ static inline void aio_delete_io_task(struct pollfd *pollfd, task_list_t *tasks,
     }
     if (tasks->writes_amount == 0) {
         pollfd->events &= ~POLLOUT;
+    }
+}
+
+static void delete_first_timer(aio_scheduler_t *sched) {
+    sched->timers.arr[0] = sched->timers.arr[sched->timers.size - 1];
+    sched->timers.size--;
+
+    // Sift down
+    size_t i = 0;
+    while (1) {
+        size_t left = 2 * i + 1;
+        size_t right = 2 * i + 2;
+        size_t smallest = i;
+
+        if (left < sched->timers.size && sched->timers.arr[left].time < sched->timers.arr[smallest].time) {
+            smallest = left;
+        }
+        if (right < sched->timers.size && sched->timers.arr[right].time < sched->timers.arr[smallest].time) {
+            smallest = right;
+        }
+
+        if (smallest != i) {
+            aio_timer_t tmp = sched->timers.arr[smallest];
+            sched->timers.arr[smallest] = sched->timers.arr[i];
+            sched->timers.arr[i] = tmp;
+            i = smallest;
+        }
+        else {
+            break;
+        }
+    }
+}
+
+static void aio_check_timers(aio_scheduler_t *sched) {
+    while (sched->timers.size > 0 && sched->loop_time >= sched->timers.arr[0].time) {
+        if (sched->timers.arr[0].callback) {
+            sched->timers.arr[0].callback(sched->loop_time, sched->timers.arr[0].data);
+        }
+        delete_first_timer(sched);
     }
 }
 
@@ -229,14 +284,38 @@ static void aio_proceed_io_tasks(struct pollfd *pollfd, task_list_t *tasks) {
     }
 }
 
+static int get_timeout(aio_scheduler_t *sched) {
+    // No timers - wait for io or signal
+    if (sched->timers.size == 0) {
+        return -1;
+    }
+    // First timer already expired - just check all fds for io events and don't wait
+    else if (sched->timers.arr[0].time <= sched->loop_time) {
+        fprintf(stderr, "Wait for 0\n");
+        return 0;
+    }
+    // Wait for either io, timer of signal
+    else {
+        fprintf(stderr, "WAIT FOR %d\n", (int) (sched->timers.arr[0].time - sched->loop_time) * 1000);
+        return (int) (sched->timers.arr[0].time - sched->loop_time) * 1000;
+    }
+}
+
 void aio_scheduler_proceed(aio_scheduler_t *sched) {
+    sched->loop_time = time(NULL);
     process_pending_tasks(sched);
 
     fprintf(stderr, "Poll %zu\n", sched->fds.size);
-    poll(sched->fds.arr, sched->fds.size, -1);
+    int poll_res = poll(sched->fds.arr, sched->fds.size, get_timeout(sched));
+    sched->loop_time = time(NULL);
 
-    for (size_t i = 0; i < sched->fds.size; i++) {
-        aio_proceed_io_tasks(&sched->fds.arr[i], &sched->task_lists.arr[i]);
+    aio_check_timers(sched);
+
+    if (poll_res > 0) {
+        fprintf(stderr, "IO\n");
+        for (size_t i = 0; i < sched->fds.size; i++) {
+            aio_proceed_io_tasks(&sched->fds.arr[i], &sched->task_lists.arr[i]);
+        }
     }
 }
 
