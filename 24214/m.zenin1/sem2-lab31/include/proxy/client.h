@@ -66,3 +66,5 @@ void client_health_check_callback(time_t time, void *udata);
 void client_silent_disconnect(client_task_t *task);
 void client_respond_error(client_task_t *task, char *msg, size_t msg_size);
 void process_request_callback(ssize_t r, int err, void *udata);
+void client_write_cached_last_callback(ssize_t r, int err, void *udata);
+void client_write_cached_callback(ssize_t r, int err, void *udata);

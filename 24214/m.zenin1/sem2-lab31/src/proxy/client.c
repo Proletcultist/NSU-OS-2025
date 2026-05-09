@@ -88,11 +88,32 @@ void client_respond_error(client_task_t *task, char *msg, size_t msg_size) {
     task->client->state = CLIENT_DISCONNECTING;
 }
 
+void client_write_cached_last_callback(ssize_t r, int err, void *udata) {
+    client_task_t *task = udata;
+
+    if (task->client->state == CLIENT_DISCONNECTED) {
+        free(task);
+        return;
+    }
+
+    client_silent_disconnect(task);
+}
+
+void client_write_cached_callback(ssize_t r, int err, void *udata) {
+    client_task_t *task = udata;
+
+    if (r <= 0) {
+        task->client->state = CLIENT_DISCONNECTED;
+    }
+
+    free(task);
+}
+
 void client_health_check_callback(time_t time, void *udata) {
     client_health_check_timer_t *timer = udata;
 
-    // If client is already freed, started waiting for data from server or
-    // disconnected - turn of teh timer
+    // If there is no client linked with this timer or it is disconnected
+    // destroy the timer
     if (timer->client == NULL || timer->client->state == CLIENT_DISCONNECTED) {
         free(timer);
         return;
@@ -127,6 +148,7 @@ void client_health_check_callback(time_t time, void *udata) {
                 break;
             case CLIENT_DISCONNECTED:
                 // Unreachable
+                free(timer);
                 return;
         }
 
@@ -259,6 +281,14 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                     else {
                         fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client->client_ip, task->sm.uri.hostname);
                         // TODO: Suck all the cache, also, set state
+
+                        // Start waiting for data from server and forget about timer - it will be cleaned up
+                        task->client->state = CLIENT_WAITS_FOR_DATA;
+                        task->client->health_check_timer->client = NULL;
+                        task->client->health_check_timer = NULL;
+
+                        cache_entry_t *entry = cache_lookup(task->sm.uri);
+                        cache_entry_add_pending(entry, task->client);
                     }
                     http_state_machine_destruct(&task->sm);
                     free(task);
