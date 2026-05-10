@@ -297,12 +297,10 @@ static int get_timeout(aio_scheduler_t *sched) {
     }
     // First timer already expired - just check all fds for io events and don't wait
     else if (sched->timers.arr[0].time <= sched->loop_time) {
-        fprintf(stderr, "Wait for 0\n");
         return 0;
     }
     // Wait for either io, timer of signal
     else {
-        fprintf(stderr, "WAIT FOR %d\n", (int) (sched->timers.arr[0].time - sched->loop_time) * 1000);
         return (int) (sched->timers.arr[0].time - sched->loop_time) * 1000;
     }
 }
@@ -311,14 +309,13 @@ void aio_scheduler_proceed(aio_scheduler_t *sched) {
     sched->loop_time = time(NULL);
     process_pending_tasks(sched);
 
-    fprintf(stderr, "Poll %zu\n", sched->fds.size);
+    // fprintf(stderr, "Poll %zu\n", sched->fds.size);
     int poll_res = poll(sched->fds.arr, sched->fds.size, get_timeout(sched));
     sched->loop_time = time(NULL);
 
     aio_check_timers(sched);
 
     if (poll_res > 0) {
-        fprintf(stderr, "IO\n");
         for (size_t i = 0; i < sched->fds.size; i++) {
             aio_proceed_io_tasks(&sched->fds.arr[i], &sched->task_lists.arr[i]);
         }

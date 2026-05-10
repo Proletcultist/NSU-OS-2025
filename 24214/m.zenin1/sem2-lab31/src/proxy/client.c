@@ -106,18 +106,72 @@ void client_write_cached_callback(ssize_t r, int err, void *udata) {
     free(task);
 }
 
+static void read_cache_callback(ssize_t r, int err, void *udata) {
+    client_read_cache_task_t *task = udata;
+
+    if (task->client->state != CLIENT_READING_CACHED) {
+        free(task);
+        return;
+    }
+
+    if (r < 0) {
+        fprintf(stderr, "[Error] Error while trying to write to %s: %s\n", task->client->client_ip, strerror(err));
+    }
+    else if (r == 0) {
+        fprintf(stderr, "[Error] Client %s terminated connection\n", task->client->client_ip);
+    }
+    if (r <= 0) {
+        client_silent_disconnect((client_task_t*) task);
+        return;
+    }
+
+    char *buffer = get_cache_block_buffer(task->current_block);
+    size_t readen = (size_t) r + (size_t) ((char*) task->task.attrs.io.buffer - buffer);
+    if (readen < task->current_block->size) {
+        // There is more data in the same block
+        task->task.attrs.io.buffer = buffer + readen;
+        task->task.attrs.io.size = task->current_block->size - readen;
+        aio_scheduler_schedule(task->client->sched, (task_t*) task);
+    }
+    else if (task->current_block->finished && task->current_block->next != NULL && task->current_block->next->size > 0) {
+        // Block is finished, but there is next with data
+        task->current_block = task->current_block->next;
+        task->task.attrs.io.buffer = get_cache_block_buffer(task->current_block);
+        task->task.attrs.io.size = task->current_block->size;
+        aio_scheduler_schedule(task->client->sched, (task_t*) task);
+    }
+    else if (task->current_block->finished && task->current_block->next == NULL) {
+        // Block is finished and there is no next block - close connection
+        client_silent_disconnect((client_task_t*) task);   
+    }
+    else {
+        // No data available - add to pending
+        task->client->state = CLIENT_WAITS_FOR_DATA;
+        task->client->health_check_timer->client = NULL;
+        task->client->health_check_timer = NULL;
+        cache_entry_add_pending(task->entry, task->client);
+        free(task);
+    }
+}
+
 void client_health_check_callback(time_t time, void *udata) {
     client_health_check_timer_t *timer = udata;
 
     // If there is no client linked with this timer or it is disconnected
     // destroy the timer
-    if (timer->client == NULL || timer->client->state == CLIENT_DISCONNECTED) {
+    if (timer->client == NULL) {
+        free(timer);
+        return;
+    }
+    else if (timer->client->state == CLIENT_DISCONNECTED) {
+        timer->client->health_check_timer = NULL;
         free(timer);
         return;
     }
 
     // If time ellapsed - disconnect client
     if (time - timer->last_update >= timer->task.attrs.timer.time) {
+        timer->client->health_check_timer = NULL;
         if (timer->cleanup_client) {
             client_silent_disconnect((client_task_t*) timer);
         }
@@ -150,6 +204,7 @@ void client_health_check_callback(time_t time, void *udata) {
         }
 
         if (next_check_time < time) {
+            timer->client->health_check_timer = NULL;
             if (timer->cleanup_client) {
                 client_silent_disconnect((client_task_t*) timer);
             }
@@ -277,15 +332,38 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                     }
                     else {
                         fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client->client_ip, task->sm.uri.hostname);
-                        // TODO: Suck all the cache, also, set state
 
-                        // Start waiting for data from server and forget about timer - it will be cleaned up
-                        task->client->state = CLIENT_WAITS_FOR_DATA;
-                        task->client->health_check_timer->client = NULL;
-                        task->client->health_check_timer = NULL;
-
+                        task->client->state = CLIENT_READING_CACHED;
                         cache_entry_t *entry = cache_lookup(task->sm.uri);
-                        cache_entry_add_pending(entry, task->client);
+
+                        // If there is data in first block - read it
+                        if (entry->first_block != NULL && entry->first_block->size > 0) {
+                            void *buffer = get_cache_block_buffer(entry->first_block);
+
+                            client_read_cache_task_t *cache_task = malloc(sizeof(client_read_cache_task_t));
+                            *cache_task = (client_read_cache_task_t) {
+                                .task.type = WRITE_REQUEST,
+                                .task.attrs.io = {
+                                    .fd = task->client->fd,
+                                    .as_first = false,
+                                    .buffer = buffer,
+                                    .size = entry->first_block->size,
+                                    .data = cache_task,
+                                    .callback = read_cache_callback
+                                },
+                                .client = task->client,
+                                .entry = entry,
+                                .current_block = entry->first_block
+                            };
+                            aio_scheduler_schedule(task->client->sched, (task_t*) cache_task);
+                        }
+                        // Else - add to pending
+                        else {
+                            task->client->state = CLIENT_WAITS_FOR_DATA;
+                            task->client->health_check_timer->client = NULL;
+                            task->client->health_check_timer = NULL;
+                            cache_entry_add_pending(entry, task->client);
+                        }
                     }
                     http_state_machine_destruct(&task->sm);
                     free(task);

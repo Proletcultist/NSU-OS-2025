@@ -2,6 +2,8 @@
 
 #include <time.h>
 #include "scheduler/aio_scheduler.h"
+#include "cache/cache.h"
+#include "cache/cache_block.h"
 
 #define CLIENT_SEND_REQUEST_TIMEOUT     5
 #define CLIENT_READ_CACHED_TIMEOUT      5
@@ -12,6 +14,8 @@
 #define MAX_LINE_SIZE (8 * 1024)    // 8KB
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
+
+struct cache_entry;
 
 typedef enum proxy_client_state {
     CLIENT_SENDING_REQUEST,     // Receiving clients' request, if failed or timed out - start disconnection
@@ -47,6 +51,13 @@ typedef struct client_health_check_timer {
     time_t last_update;
 } client_health_check_timer_t;
 
+typedef struct client_read_cache_task {
+    task_t task;
+    proxy_client_t *client;
+
+    struct cache_entry *entry;
+    cache_block_t *current_block;
+} client_read_cache_task_t;
 
 typedef struct process_request_task {
     task_t task;

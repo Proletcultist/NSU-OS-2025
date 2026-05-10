@@ -22,8 +22,6 @@ static void server_cleanup_callback(int err, void *udata) {
     if (task->server->health_check_timer != NULL) {
         task->server->health_check_timer->server = NULL;
     }
-    free(task->server->cache_entry);
-    free(task->server->uri.buffer);
     free(task->server);
     free(task);
 }
@@ -152,13 +150,20 @@ static void fail_server_connection(server_task_t *task, char *msg, size_t msg_si
 
     send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, msg, msg_size, true);
 
+    free(task->server->cache_entry);
+    free(task->server->uri.buffer);
     close_server_connection(task);
 }
 
 static void server_health_check_callback(time_t time, void *udata) {
     server_health_check_timer_t *timer = udata;
 
-    if (timer->server == NULL || timer->server->state == SERVER_DISCONNECTED) {
+    if (timer->server == NULL) {
+        free(timer);
+        return;
+    }
+    else if (timer->server->state == SERVER_DISCONNECTED) {
+        timer->server->health_check_timer = NULL;
         free(timer);
         return;
     }
@@ -166,6 +171,7 @@ static void server_health_check_callback(time_t time, void *udata) {
     time_t next_check_time = timer->last_update + SERVER_TIMEOUT;
     // If time ellapsed - disconnect
     if (time - timer->last_update >= timer->task.attrs.timer.time || next_check_time < time) {
+        timer->server->health_check_timer = NULL;
         // If we didn't start sending body to clients, send them error
         if (timer->server->state == SERVER_CONNECTION_IN_PROGRESS ||
             timer->server->state == SERVER_RECEIVING_HEADERS) {
@@ -271,6 +277,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
         .server = server,
         .last_update = sched->loop_time
     };
+    server->health_check_timer = timer_task;
 
     // Schedule request writing
     request_writing_task_t *write_req_task = malloc(sizeof(request_writing_task_t));
@@ -447,25 +454,17 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
 }
 
 static void write_next_cache_block(server_task_t *task) {
-    void *buffer;
+    void *buffer = get_cache_block_buffer(task->server->cache_entry->last_block);
     size_t size = task->server->cache_entry->last_block->cap - task->server->cache_entry->last_block->size;
-
-    if (task->server->cache_entry->last_block->external) {
-        cache_block_external_t *block = (cache_block_external_t*) task->server->cache_entry->last_block;
-        buffer = block->data;
-    }
-    else {
-        cache_block_in_place_t *block = (cache_block_in_place_t*) task->server->cache_entry->last_block;
-        buffer = &block->data;
-    }
+    size = task->server->has_content_length ? MIN(size, task->server->content_length) : size;
 
     task->task = (task_t) {
         .type = READ_REQUEST,
         .attrs.io = {
             .fd = task->server->fd,
             .as_first = false,
-            .buffer = buffer,
-            .size = MIN(size, task->server->content_length),
+            .buffer = buffer + task->server->cache_entry->last_block->size,
+            .size = size,
             .data = task,
             .callback = fill_up_cache_callback
         }
