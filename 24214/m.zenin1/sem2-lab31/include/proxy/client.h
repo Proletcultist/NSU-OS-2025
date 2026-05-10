@@ -32,6 +32,7 @@ typedef struct proxy_client {
     int fd;
     char client_ip[16];
     aio_scheduler_t *sched;
+    struct cache_entry *entry;
 
     struct client_health_check_timer *health_check_timer;
 
@@ -55,7 +56,6 @@ typedef struct client_read_cache_task {
     task_t task;
     proxy_client_t *client;
 
-    struct cache_entry *entry;
     cache_block_t *current_block;
 } client_read_cache_task_t;
 

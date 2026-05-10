@@ -22,6 +22,7 @@ static void server_cleanup_callback(int err, void *udata) {
     if (task->server->health_check_timer != NULL) {
         task->server->health_check_timer->server = NULL;
     }
+    cache_entry_put(task->server->cache_entry);
     free(task->server);
     free(task);
 }
@@ -127,9 +128,9 @@ static void early_fail_server_connection(proxy_server_t server, char *msg, size_
     cache_delete(server.uri);
 
     send_cached_to_all_clients(&server, &server.cache_entry->pending, msg, msg_size, true);
+    cache_entry_put(server.cache_entry);
 
     free(server.uri.buffer);
-    free(server.cache_entry);
 }
 
 static void close_server_connection(server_task_t *task) {
@@ -150,7 +151,6 @@ static void fail_server_connection(server_task_t *task, char *msg, size_t msg_si
 
     send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, msg, msg_size, true);
 
-    free(task->server->cache_entry);
     free(task->server->uri.buffer);
     close_server_connection(task);
 }
@@ -476,6 +476,7 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
     response_analysis_task_t *task = udata;
 
     if (task->server->state != SERVER_RECEIVING_HEADERS) {
+        http_state_machine_destruct(&task->sm);
         free(task);
         return;
     }

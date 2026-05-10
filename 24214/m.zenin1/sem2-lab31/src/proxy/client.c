@@ -21,6 +21,9 @@ static void client_cleanup_callback(int err, void *udata) {
     if (task->client->health_check_timer != NULL) {
         task->client->health_check_timer->client = NULL;
     }
+    if (task->client->entry != NULL) {
+        cache_entry_put(task->client->entry);
+    }
     free(task->client);
     free(task);
 }
@@ -149,7 +152,7 @@ static void read_cache_callback(ssize_t r, int err, void *udata) {
         task->client->state = CLIENT_WAITS_FOR_DATA;
         task->client->health_check_timer->client = NULL;
         task->client->health_check_timer = NULL;
-        cache_entry_add_pending(task->entry, task->client);
+        cache_entry_add_pending(task->client->entry, task->client);
         free(task);
     }
 }
@@ -311,8 +314,8 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                     client_respond_error((client_task_t*) task, task->msg, task->msg_size);
                 }
                 else {
-                    cache_entry_t *entry = cache_lookup(task->sm.uri);
-                    if (entry == NULL) {
+                    task->client->entry = cache_get_ref(task->sm.uri);
+                    if (task->client->entry == NULL) {
                         fprintf(stderr, "[Info] %s Cache miss for %s\n", task->client->client_ip, task->sm.uri.hostname);
 
                         // Start waiting for data from server and forget about timer - it will be cleaned up
@@ -320,12 +323,14 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                         task->client->health_check_timer->client = NULL;
                         task->client->health_check_timer = NULL;
 
-                        cache_entry_t *new_entry = malloc(sizeof(cache_entry_t));
-                        *new_entry = CACHE_ENTRY_INITIALIZER;
-                        cache_entry_add_pending(new_entry, task->client);
-                        cache_enchache(task->sm.uri, new_entry);
+                        task->client->entry = malloc(sizeof(cache_entry_t));
+                        *task->client->entry = CACHE_ENTRY_INITIALIZER;
+                        // One for client and one for server
+                        task->client->entry->references = 2;
+                        cache_entry_add_pending(task->client->entry, task->client);
+                        cache_enchache(task->sm.uri, task->client->entry);
 
-                        establish_connect_with_server(task->client->sched, task->sm.uri, new_entry);
+                        establish_connect_with_server(task->client->sched, task->sm.uri, task->client->entry);
 
                         // Delete uri from state machine, so it will not deallocate it
                         task->sm.uri.buffer = NULL;
@@ -334,11 +339,10 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                         fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client->client_ip, task->sm.uri.hostname);
 
                         task->client->state = CLIENT_READING_CACHED;
-                        cache_entry_t *entry = cache_lookup(task->sm.uri);
 
                         // If there is data in first block - read it
-                        if (entry->first_block != NULL && entry->first_block->size > 0) {
-                            void *buffer = get_cache_block_buffer(entry->first_block);
+                        if (task->client->entry->first_block != NULL && task->client->entry->first_block->size > 0) {
+                            void *buffer = get_cache_block_buffer(task->client->entry->first_block);
 
                             client_read_cache_task_t *cache_task = malloc(sizeof(client_read_cache_task_t));
                             *cache_task = (client_read_cache_task_t) {
@@ -347,13 +351,12 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                                     .fd = task->client->fd,
                                     .as_first = false,
                                     .buffer = buffer,
-                                    .size = entry->first_block->size,
+                                    .size = task->client->entry->first_block->size,
                                     .data = cache_task,
                                     .callback = read_cache_callback
                                 },
                                 .client = task->client,
-                                .entry = entry,
-                                .current_block = entry->first_block
+                                .current_block = task->client->entry->first_block
                             };
                             aio_scheduler_schedule(task->client->sched, (task_t*) cache_task);
                         }
@@ -362,7 +365,7 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                             task->client->state = CLIENT_WAITS_FOR_DATA;
                             task->client->health_check_timer->client = NULL;
                             task->client->health_check_timer = NULL;
-                            cache_entry_add_pending(entry, task->client);
+                            cache_entry_add_pending(task->client->entry, task->client);
                         }
                     }
                     http_state_machine_destruct(&task->sm);

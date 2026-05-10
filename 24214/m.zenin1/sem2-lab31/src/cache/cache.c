@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include "cache/cache.h"
 
@@ -24,15 +25,46 @@ void cache_entry_add_block(cache_entry_t *entry, cache_block_t *block) {
     }
 }
 
+void cache_entry_put(cache_entry_t *entry) {
+    entry->references--;
+
+    if (entry->references != 0) {
+        return;
+    }
+
+    cache_block_t *cursor = entry->first_block;
+    while (cursor != NULL) {
+        cache_block_t *next = cursor->next;
+
+        if (cursor->external) {
+            free(((cache_block_external_t*) cursor)->data);
+        }
+        free(cursor);
+
+        cursor = next;
+    }
+}
+
 void cache_enchache(uri_t uri, cache_entry_t *entry) {
+    entry->references++;
     map_uri_cache_entry_ptr_t_set(&cache, uri, entry);
 }
 
 void cache_delete(uri_t uri) {
-    map_uri_cache_entry_ptr_t_remove(&cache, uri);
+    cache_entry_t **ptr = map_uri_cache_entry_ptr_t_get(&cache, uri);
+    if (ptr != NULL) {
+        cache_entry_put(*ptr);
+        map_uri_cache_entry_ptr_t_remove(&cache, uri);
+    }
 }
 
-cache_entry_t* cache_lookup(uri_t uri) {
+cache_entry_t* cache_get_ref(uri_t uri) {
     cache_entry_t **ptr = map_uri_cache_entry_ptr_t_get(&cache, uri);
-    return ptr == NULL ? NULL : *ptr;
+    if (ptr == NULL) {
+        return NULL;
+    }
+    else {
+        (*ptr)->references++;
+        return *ptr;
+    }
 }
