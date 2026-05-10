@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <string.h>
@@ -15,6 +16,44 @@ void free_callback(int err, void *udata) {
     free(udata);
 }
 
+size_t parse_size_t_trimmed(char *str, size_t size, bool *succ) {
+    while (size != 0 && (*str == ' ' || *str == '\t')) {
+        str++;
+        size--;
+    }
+    if (size == 0 || !isdigit(*str)){
+        *succ = false;
+        return 0;
+    }
+
+    size_t ret = 0;
+    while (size != 0 && isdigit(*str)) {
+        size_t prev = ret;
+        ret *= 10;
+        ret += (*str) - '0';
+        if (prev > ret) {
+            *succ = false;
+            return 0;
+        }
+
+        str++;
+        size--;
+    }
+
+    while (size != 0 && (*str == ' ' || *str == '\t')) {
+        str++;
+        size--;
+    }
+
+    if (size != 0) {
+        *succ = false;
+        return 0;
+    }
+
+    *succ = true;
+    return ret;
+}
+
 void generate_request(char **buffer, size_t *size, uri_t uri) {
     size_t hostname_len = strlen(uri.hostname);
     size_t port_len = strlen(uri.port);
@@ -23,6 +62,15 @@ void generate_request(char **buffer, size_t *size, uri_t uri) {
     *buffer = malloc(*size);
 
     sprintf(*buffer, "GET http://%s:%s%s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\nContent-Lenght: 0\r\n\r\n", uri.hostname, uri.port, uri.path, uri.hostname);
+}
+
+bool ci_memcmp(char *s1, char *s2, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (tolower(s1[i]) != tolower(s2[i])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool mem_compare_trimed(char *a, size_t a_size, char *b, size_t b_size) {
@@ -36,7 +84,7 @@ bool mem_compare_trimed(char *a, size_t a_size, char *b, size_t b_size) {
     }
 
     size_t i = 0;
-    while (i < a_size && i < b_size && a[i] == b[i]) {
+    while (i < a_size && i < b_size && tolower(a[i]) == tolower(b[i])) {
         i++;
     }
 

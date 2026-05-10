@@ -7,6 +7,8 @@
 #include "scheduler/aio_scheduler.h"
 #include "http.h"
 
+#define SERVER_TIMEOUT 5
+
 typedef enum proxy_server_state {
     SERVER_CONNECTION_IN_PROGRESS,
     SERVER_RECEIVING_HEADERS,
@@ -21,6 +23,8 @@ typedef struct proxy_server {
     int fd;
     aio_scheduler_t *sched;
     uri_t uri;
+    bool has_content_length;
+    size_t content_length;
 
     struct server_health_check_timer *health_check_timer;
 
@@ -51,7 +55,6 @@ typedef struct response_analysis_task {
     task_t task;
     proxy_server_t *server;
 
-    ssize_t content_length;
     http_state_machine_t sm;
 } response_analysis_task_t;
 
