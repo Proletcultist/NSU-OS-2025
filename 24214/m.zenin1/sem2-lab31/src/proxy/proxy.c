@@ -34,6 +34,7 @@ static void accept_connection(ssize_t r, int err, void *udata) {
                   .state = CLIENT_SENDING_REQUEST,
                   .fd = fd,
                   .sched = &sched,
+                  .entry = NULL
               };
     if (connected_addr.sa_family == AF_INET) {
         inet_ntop(AF_INET, &((struct sockaddr_in*) &connected_addr)->sin_addr, client->client_ip, INET_ADDRSTRLEN);
