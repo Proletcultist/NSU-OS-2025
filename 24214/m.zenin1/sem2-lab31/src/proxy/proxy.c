@@ -45,46 +45,44 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     }
 
     task_t *delegate_task = malloc(sizeof(task_t));
-    *delegate_task = (task_t)
-                     {
-                         .type = DELEGATE,
-                         .attrs.ctl = {
-                             .fd = fd,
-                             .callback = free_callback
-                         }
-                     };
+    *delegate_task = (task_t) {
+        .type = DELEGATE,
+        .attrs.ctl = {
+            .fd = fd,
+            .data = delegate_task,
+            .callback = free_callback
+        }
+    };
 
     process_request_task_t *req_task = malloc(sizeof(process_request_task_t));
-    *req_task = (process_request_task_t)
-                {
-                    .task.type = READ_REQUEST,
-                    .task.attrs.io = {
-                        .as_first = false,
-                        .fd = fd,
-                        .data = req_task,
-                        .callback = process_request_callback
-                    },
-                    .client = client,
-                    .bytes_received = 0,
-                    .sm = HTTP_STATE_MACHINE_REQ_INITIALIZER,
-                    .bad_request = false
-                };
+    *req_task = (process_request_task_t) {
+        .task.type = READ_REQUEST,
+        .task.attrs.io = {
+            .as_first = false,
+            .fd = fd,
+            .data = req_task,
+            .callback = process_request_callback
+        },
+        .client = client,
+        .bytes_received = 0,
+        .sm = HTTP_STATE_MACHINE_REQ_INITIALIZER,
+        .bad_request = false
+    };
     req_task->sm.discarding = true;
     http_state_machine_alloc(&req_task->sm, &req_task->task.attrs.io.buffer, &req_task->task.attrs.io.size);
 
     client_health_check_timer_t *timer_task = malloc(sizeof(client_health_check_timer_t));
-    *timer_task = (client_health_check_timer_t)
-                  {
-                      .task.type = ADD_TIMER,
-                      .task.attrs.timer = {
-                          .time = CLIENT_SEND_REQUEST_TIMEOUT,
-                          .callback = client_health_check_callback,
-                          .data = timer_task
-                      },
-                      .client = client,
-                      .cleanup_client = true,
-                      .last_update = sched.loop_time
-                  };
+    *timer_task = (client_health_check_timer_t) {
+        .task.type = ADD_TIMER,
+        .task.attrs.timer = {
+            .time = CLIENT_SEND_REQUEST_TIMEOUT,
+            .callback = client_health_check_callback,
+            .data = timer_task
+        },
+        .client = client,
+        .cleanup_client = true,
+        .last_update = sched.loop_time
+    };
     client->health_check_timer = timer_task;
 
     aio_scheduler_schedule(&sched, delegate_task);
@@ -112,21 +110,21 @@ void start_proxy(struct in_addr ip, in_port_t port) {
     sched = aio_scheduler_construct();
 
     task_t delegate_task = {
-                              .type = DELEGATE,
-                              .attrs.ctl = {
-                                  .fd = listening,
-                                  .callback = NULL
-                              }
-                           };
-    task_t accept_task =   {
-                              .type = ACCEPT_CONNECTION_REQUESTS,
-                              .attrs.io = {
-                                  .as_first = false,
-                                  .fd = listening,
-                                  .data = &accept_task,
-                                  .callback = accept_connection
-                              }
-                           };
+       .type = DELEGATE,
+       .attrs.ctl = {
+           .fd = listening,
+           .callback = NULL
+       }
+    };
+    task_t accept_task = {
+       .type = ACCEPT_CONNECTION_REQUESTS,
+       .attrs.io = {
+           .as_first = false,
+           .fd = listening,
+           .data = &accept_task,
+           .callback = accept_connection
+       }
+    };
 
     aio_scheduler_schedule(&sched, &delegate_task);
     aio_scheduler_schedule(&sched, &accept_task);

@@ -11,7 +11,9 @@
 #include "proxy/client.h"
 #include "proxy/responses.h"
 
-#define SERVER_TIMEOUT 5
+#define DATA_CHUNK_SIZE 1024
+
+static void write_next_cache_block(server_task_t *task);
 
 static void server_cleanup_callback(int err, void *udata) {
     server_task_t *task = udata;
@@ -56,18 +58,17 @@ static void send_task_to_client(proxy_server_t *server, client_task_t *task) {
     // If there is no timer for client - create one
     if (task->client->health_check_timer == NULL) {
         client_health_check_timer_t *timer_task = malloc(sizeof(client_health_check_timer_t));
-        *timer_task = (client_health_check_timer_t)
-                      {
-                          .task.type = ADD_TIMER,
-                          .task.attrs.timer = {
-                              .time = CLIENT_WAIT_FOR_DATA_TIMEOUT,
-                              .callback = client_health_check_callback,
-                              .data = timer_task
-                          },
-                          .client = task->client,
-                          .cleanup_client = false,
-                          .last_update = server->sched->loop_time
-                      };
+        *timer_task = (client_health_check_timer_t) {
+            .task.type = ADD_TIMER,
+            .task.attrs.timer = {
+                .time = CLIENT_WAIT_FOR_DATA_TIMEOUT,
+                .callback = client_health_check_callback,
+                .data = timer_task
+            },
+            .client = task->client,
+            .cleanup_client = false,
+            .last_update = server->sched->loop_time
+        };
         task->client->health_check_timer = timer_task;
         aio_scheduler_schedule(task->client->sched, (task_t*) timer_task);
     }
@@ -99,19 +100,18 @@ static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_
         }
 
         client_task_t *task = malloc(sizeof(client_task_t));
-        *task = (client_task_t)
-                {
-                    .task.type = WRITE_REQUEST,
-                    .task.attrs.io = {
-                        .fd = cursor->fd,
-                        .as_first = false,
-                        .buffer = buffer,
-                        .size = size,
-                        .data = task,
-                        .callback = callback
-                    },
-                    .client = cursor
-                };
+        *task = (client_task_t) {
+            .task.type = WRITE_REQUEST,
+            .task.attrs.io = {
+                .fd = cursor->fd,
+                .as_first = false,
+                .buffer = buffer,
+                .size = size,
+                .data = task,
+                .callback = callback
+            },
+            .client = cursor
+        };
         send_task_to_client(server, task);
 
         prev = cursor;
@@ -134,22 +134,25 @@ static void early_fail_server_connection(proxy_server_t server, char *msg, size_
     free(server.cache_entry);
 }
 
+static void close_server_connection(server_task_t *task) {
+    task->task = (task_t) {
+        .type = UNDELEGATE,
+        .attrs.ctl = {
+            .fd = task->server->fd,
+            .data = task,
+            .callback = server_cleanup_callback
+        }
+    };
+    aio_scheduler_schedule(task->server->sched, (task_t*) task);
+}
+
 static void fail_server_connection(server_task_t *task, char *msg, size_t msg_size) {
     task->server->state = SERVER_DISCONNECTED;
     cache_delete(task->server->uri);
 
     send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, msg, msg_size, true);
 
-    task->task = (task_t)
-                 {
-                     .type = UNDELEGATE,
-                     .attrs.ctl = {
-                         .fd = task->server->fd,
-                         .data = task,
-                         .callback = server_cleanup_callback
-                     }
-                 };
-    aio_scheduler_schedule(task->server->sched, (task_t*) task);
+    close_server_connection(task);
 }
 
 static void server_health_check_callback(time_t time, void *udata) {
@@ -189,6 +192,8 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
         .state = SERVER_CONNECTION_IN_PROGRESS,
         .sched = sched,
         .uri = uri,
+        .has_content_length = false,
+        .content_length = 0,
         .health_check_timer = NULL,
         .cache_entry = entry
     };
@@ -214,19 +219,18 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
         // Connection in progress
         if (err < 0 && errno == EINPROGRESS) {
             connect_task = malloc(sizeof(try_connect_to_server_task_t));
-            *connect_task = (try_connect_to_server_task_t)
-                            {
-                                .task.type = WAIT_FOR_CONNECTION,
-                                .task.attrs.io = {
-                                    .fd = server_fd,
-                                    .as_first = true,
-                                    .data = connect_task,
-                                    .callback = try_connect_callback
-                                },
-                                .server = server,
-                                .first = res,
-                                .next_try = current_try->ai_next
-                            };
+            *connect_task = (try_connect_to_server_task_t) {
+                .task.type = WAIT_FOR_CONNECTION,
+                .task.attrs.io = {
+                    .fd = server_fd,
+                    .as_first = true,
+                    .data = connect_task,
+                    .callback = try_connect_callback
+                },
+                .server = server,
+                .first = res,
+                .next_try = current_try->ai_next
+            };
             break;
         }
 
@@ -247,60 +251,56 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
 
     // Schedule delegate server fd
     task_t *delegate_task = malloc(sizeof(task_t));
-    *delegate_task = (task_t)
-                     {
-                         .type = DELEGATE,
-                         .attrs.ctl = {
-                             .fd = server_fd,
-                             .callback = free_callback
-                         }
-                     };
+    *delegate_task = (task_t) {
+        .type = DELEGATE,
+        .attrs.ctl = {
+            .fd = server_fd,
+            .data = delegate_task,
+            .callback = free_callback
+        }
+    };
 
     server_health_check_timer_t *timer_task = malloc(sizeof(server_health_check_timer_t));
-    *timer_task = (server_health_check_timer_t)
-                  {
-                      .task.type = ADD_TIMER,
-                      .task.attrs.timer = {
-                          .time = SERVER_TIMEOUT,
-                          .callback = server_health_check_callback,
-                          .data = timer_task
-                      },
-                      .server = server,
-                      .last_update = sched->loop_time
-                  };
+    *timer_task = (server_health_check_timer_t) {
+        .task.type = ADD_TIMER,
+        .task.attrs.timer = {
+            .time = SERVER_TIMEOUT,
+            .callback = server_health_check_callback,
+            .data = timer_task
+        },
+        .server = server,
+        .last_update = sched->loop_time
+    };
 
     // Schedule request writing
     request_writing_task_t *write_req_task = malloc(sizeof(request_writing_task_t));
-    *write_req_task = (request_writing_task_t)
-                      {
-                          .task.type = WRITE_REQUEST,
-                          .task.attrs.io = {
-                              .as_first = false,
-                              .fd = server_fd,
-                              .data = write_req_task,
-                              .callback = write_request_callback
-                          },
-                          .server = server
-                      };
+    *write_req_task = (request_writing_task_t) {
+        .task.type = WRITE_REQUEST,
+        .task.attrs.io = {
+            .as_first = false,
+            .fd = server_fd,
+            .data = write_req_task,
+            .callback = write_request_callback
+        },
+        .server = server
+    };
     generate_request((char**) &write_req_task->task.attrs.io.buffer,
                      &write_req_task->task.attrs.io.size,
                      uri);
 
     // Schedule response reading
     response_analysis_task_t *read_res_task = malloc(sizeof(response_analysis_task_t));
-    *read_res_task = (response_analysis_task_t)
-                     {
-                         .task.type = READ_REQUEST,
-                         .task .attrs.io = {
-                            .as_first = false,
-                            .fd = server_fd,
-                            .data = read_res_task,
-                            .callback = analyze_response_callback
-                         },
-                         .server = server,
-                         .content_length = 0,
-                         .sm = HTTP_STATE_MACHINE_RES_INITIALIZER
-                     };
+    *read_res_task = (response_analysis_task_t) {
+        .task.type = READ_REQUEST,
+        .task .attrs.io = {
+           .as_first = false,
+           .fd = server_fd,
+           .data = read_res_task,
+           .callback = analyze_response_callback
+        },
+        .server = server,
+        .sm = HTTP_STATE_MACHINE_RES_INITIALIZER
+    };
     http_state_machine_alloc(&read_res_task->sm,
                              &read_res_task->task.attrs.io.buffer,
                              &read_res_task->task.attrs.io.size);
@@ -357,8 +357,8 @@ void try_connect_callback(ssize_t r, int err, void *udata) {
 
 void write_request_callback(ssize_t w, int err, void *udata) {
     request_writing_task_t *task = udata;
-
-    // If server isn't connected, free the task
+    free(task->task.attrs.io.buffer);
+    
     if (task->server->state != SERVER_RECEIVING_HEADERS &&
         task->server->state != SERVER_RECEIVING_BODY) {
         free(task);
@@ -373,13 +373,104 @@ void write_request_callback(ssize_t w, int err, void *udata) {
         fprintf(stderr, "[Error] Server terminated connection\n");
     }
 
-    // If we didn't start sending body to clients, send them error
-    if (w <= 0 && task->server->state == SERVER_RECEIVING_HEADERS) {
-        fail_server_connection((server_task_t*) task, bad_gateway_response, bad_gateway_response_size);
+    if (w <= 0) {
+        if (task->server->state == SERVER_RECEIVING_HEADERS) {
+            fail_server_connection((server_task_t*) task, bad_gateway_response, bad_gateway_response_size);
+        }
+        else {
+            fail_server_connection((server_task_t*) task, NULL, 0);
+        }
+    }
+    else {
+        free(task);
+    }
+}
+
+static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
+    server_task_t *task = udata;
+
+    if (task->server->state != SERVER_RECEIVING_BODY) {
+        free(task);
         return;
     }
 
-    free(task);
+    if (w < 0) {
+        fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->server->uri.hostname, strerror(err));
+        fail_server_connection((server_task_t*) task, NULL, 0);
+        return;
+    }
+    else if (w == 0) {
+        if (task->server->has_content_length) {
+            fprintf(stderr, "[Error] Server %s terminated connection\n", task->server->uri.hostname);
+            fail_server_connection((server_task_t*) task, NULL, 0);
+        }
+        else {
+            fprintf(stderr, "[Info] Server %s terminated connection\n", task->server->uri.hostname);
+
+            task->server->cache_entry->last_block->finished = true;
+            send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, NULL, 0, true);
+            close_server_connection((server_task_t*) task);
+        }
+        return;
+    }
+
+    task->server->content_length -= (size_t) w;
+
+    bool last = (task->server->has_content_length && task->server->content_length == 0);
+    bool finished = (last || task->server->cache_entry->last_block->size + (size_t) w == task->server->cache_entry->last_block->cap);
+
+    cache_block_in_place_t *following_block = NULL;
+    if (!last && finished) {
+        size_t new_cap = task->server->has_content_length ? task->server->content_length : DATA_CHUNK_SIZE;
+        following_block = malloc(sizeof(cache_block_in_place_t) + new_cap);
+        *following_block = (cache_block_in_place_t) {
+            .external = false,
+            .size = 0,
+            .cap = new_cap,
+            .finished = false
+        };
+    }
+
+    task->server->cache_entry->last_block->finished = finished;
+    cache_entry_occupy_last_block(task->server->cache_entry, (size_t) w);
+    if (following_block != NULL) {
+        cache_entry_add_block(task->server->cache_entry, (cache_block_t*) following_block);
+    }
+    send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, task->task.attrs.io.buffer, (size_t) w, last);
+
+    if (!last) {
+        write_next_cache_block(task);
+    }
+    else {
+        close_server_connection(task);
+    }
+}
+
+static void write_next_cache_block(server_task_t *task) {
+    void *buffer;
+    size_t size = task->server->cache_entry->last_block->cap - task->server->cache_entry->last_block->size;
+
+    if (task->server->cache_entry->last_block->external) {
+        cache_block_external_t *block = (cache_block_external_t*) task->server->cache_entry->last_block;
+        buffer = block->data;
+    }
+    else {
+        cache_block_in_place_t *block = (cache_block_in_place_t*) task->server->cache_entry->last_block;
+        buffer = &block->data;
+    }
+
+    task->task = (task_t) {
+        .type = READ_REQUEST,
+        .attrs.io = {
+            .fd = task->server->fd,
+            .as_first = false,
+            .buffer = buffer,
+            .size = MIN(size, task->server->content_length),
+            .data = task,
+            .callback = fill_up_cache_callback
+        }
+    };
+    aio_scheduler_schedule(task->server->sched, (task_t*) task);
 }
 
 void analyze_response_callback(ssize_t r, int err, void *udata) {
@@ -427,10 +518,24 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                 }
                 fprintf(stderr, "\"\n");
 
-                // TODO: Get content length, check Connection
+                if (ci_memcmp(name, "Content-Length", MIN(name_size, 14))) {
+                    bool succ;
+                    task->server->content_length = parse_size_t_trimmed(value, value_size, &succ);
+                    if (!succ) {
+                        http_state_machine_destruct(&task->sm);
+                        fail_server_connection((server_task_t*) task, bad_gateway_response, bad_gateway_response_size);
+                        return;
+                    }
+                    task->server->has_content_length = true;
+                }
+                else if (ci_memcmp(name, "Connection", MIN(name_size, 10)) &&
+                         !mem_compare_trimed(value, value_size, "close", 5)) {
+                    http_state_machine_destruct(&task->sm);
+                    fail_server_connection((server_task_t*) task, bad_gateway_response, bad_gateway_response_size);
+                    return;
+                }
                 break;
             case COMPLETE:
-                // TODO: Start writing
                 printf("\nBuffer content:\n");
                 printf("\033[32m");
                 for (size_t i = 0; i < task->sm.analyzed; i++) {
@@ -444,8 +549,60 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
 
                 task->server->state = SERVER_RECEIVING_BODY;
 
+                char *buffer = task->sm.data.arr;
+                size_t size = task->sm.data.size;
+                size_t cap = task->sm.data.cap;
+                task->sm.data.arr = NULL;
+                task->server->content_length -= size - task->sm.analyzed;
+
                 http_state_machine_destruct(&task->sm);
-                free(task);
+
+                bool last = (task->server->has_content_length && task->server->content_length == 0);
+                bool finished = (last || size == cap);
+
+                if (task->sm.status == 200) {
+                    cache_block_external_t *head_block = malloc(sizeof(cache_block_external_t));
+                    *head_block = (cache_block_external_t) {
+                        .external = true,
+                        .size = size,
+                        .cap = cap,
+                        .finished = finished,
+                        .data = buffer
+                    };
+
+                    cache_block_in_place_t *following_block = NULL;
+                    if (!last && finished) {
+                        size_t new_cap = task->server->has_content_length ? task->server->content_length : DATA_CHUNK_SIZE;
+                        following_block = malloc(sizeof(cache_block_in_place_t) + new_cap);
+                        *following_block = (cache_block_in_place_t) {
+                            .external = false,
+                            .size = 0,
+                            .cap = new_cap,
+                            .finished = false
+                        };
+                    }
+
+                    cache_entry_add_block(task->server->cache_entry, (cache_block_t*) head_block);
+                    if (following_block != NULL) {
+                        cache_entry_add_block(task->server->cache_entry, (cache_block_t*) following_block);
+                    }
+                    send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, buffer, size, last);
+
+                    if (!last) {
+                        write_next_cache_block((server_task_t*) task);
+                    }
+                    else {
+                        close_server_connection((server_task_t*) task);
+                    }
+                }
+                else {
+                    cache_delete(task->server->uri);
+
+                    if (task->server->has_content_length) {
+                    }
+                    else {
+                    }
+                }
                 return;
             case READING_REQUEST_LINE:
             case READ_REQUEST_LINE:

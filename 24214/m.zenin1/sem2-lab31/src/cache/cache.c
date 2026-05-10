@@ -8,6 +8,10 @@ void cache_entry_add_pending(cache_entry_t *entry, proxy_client_t *client) {
     entry->pending = client;
 }
 
+void cache_entry_occupy_last_block(cache_entry_t *entry, size_t size) {
+    entry->last_block->size += size;
+}
+
 void cache_entry_add_block(cache_entry_t *entry, cache_block_t *block) {
     block->next = NULL;
     if (entry->first_block == NULL) {

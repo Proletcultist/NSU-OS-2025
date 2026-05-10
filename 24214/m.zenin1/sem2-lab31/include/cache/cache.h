@@ -18,6 +18,7 @@ typedef struct cache_entry {
 } cache_entry_t;
 
 void cache_entry_add_pending(cache_entry_t *entry, proxy_client_t *client);
+void cache_entry_occupy_last_block(cache_entry_t *entry, size_t size);
 void cache_entry_add_block(cache_entry_t *entry, cache_block_t *block);
 
 typedef cache_entry_t *cache_entry_ptr_t;

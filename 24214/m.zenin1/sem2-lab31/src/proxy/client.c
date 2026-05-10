@@ -40,48 +40,45 @@ void client_respond_error_callback(ssize_t r, int err, void *udata) {
         fprintf(stderr, "[Error] Client terminated connection\n");
     }
 
-    task->task = (task_t)
-                 {
-                     .type = UNDELEGATE,
-                     .attrs.ctl = {
-                         .fd = task->client->fd,
-                         .data = task,
-                         .callback = client_cleanup_callback
-                     }
-                 };
+    task->task = (task_t) {
+        .type = UNDELEGATE,
+        .attrs.ctl = {
+            .fd = task->client->fd,
+            .data = task,
+            .callback = client_cleanup_callback
+        }
+    };
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
 
     task->client->state = CLIENT_DISCONNECTED;
 }
 
 void client_silent_disconnect(client_task_t *task) {
-    task->task = (task_t)
-                 {
-                     .type = UNDELEGATE,
-                     .attrs.ctl = {
-                         .fd = task->client->fd,
-                         .data = task,
-                         .callback = client_cleanup_callback
-                     }
-                 };
+    task->task = (task_t) {
+        .type = UNDELEGATE,
+        .attrs.ctl = {
+            .fd = task->client->fd,
+            .data = task,
+            .callback = client_cleanup_callback
+        }
+    };
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
 
     task->client->state = CLIENT_DISCONNECTED;
 }
 
 void client_respond_error(client_task_t *task, char *msg, size_t msg_size) {
-    task->task = (task_t)
-                 {
-                     .type = WRITE_REQUEST,
-                     .attrs.io = {
-                         .as_first = false,
-                         .fd = task->client->fd,
-                         .buffer = msg,
-                         .size = msg_size,
-                         .data = task,
-                         .callback = client_respond_error_callback
-                     }
-                 };
+    task->task = (task_t) {
+        .type = WRITE_REQUEST,
+        .attrs.io = {
+            .as_first = false,
+            .fd = task->client->fd,
+            .buffer = msg,
+            .size = msg_size,
+            .data = task,
+            .callback = client_respond_error_callback
+        }
+    };
 
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
 
@@ -246,7 +243,7 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                 }
                 fprintf(stderr, "\"\n");
 
-                if (memcmp(name, "Content-Length", MIN(name_size, 14)) == 0 && 
+                if (ci_memcmp(name, "Content-Length", MIN(name_size, 14)) && 
                     !mem_compare_trimed(value, value_size, "0", 1)) {
                     task->bad_request = true;
                     task->msg = bad_request_response;
