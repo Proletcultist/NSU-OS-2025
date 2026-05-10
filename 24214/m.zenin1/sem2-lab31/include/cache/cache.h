@@ -11,13 +11,15 @@
                                     .pending = NULL \
                                  })
 
+struct proxy_client;
+
 typedef struct cache_entry {
     cache_block_t *first_block;
     cache_block_t *last_block;
-    proxy_client_t *pending;
+    struct proxy_client *pending;
 } cache_entry_t;
 
-void cache_entry_add_pending(cache_entry_t *entry, proxy_client_t *client);
+void cache_entry_add_pending(cache_entry_t *entry, struct proxy_client *client);
 void cache_entry_occupy_last_block(cache_entry_t *entry, size_t size);
 void cache_entry_add_block(cache_entry_t *entry, cache_block_t *block);
 
