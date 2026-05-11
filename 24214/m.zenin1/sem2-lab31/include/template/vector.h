@@ -32,6 +32,7 @@ void CONCAT(NAME, _erase)(NAME *vec, size_t where, size_t num);
 #ifdef VECTOR_IMPL
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 #include <memory.h>
 

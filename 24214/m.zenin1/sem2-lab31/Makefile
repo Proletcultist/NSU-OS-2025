@@ -23,18 +23,17 @@ SOURCES = main.c \
 
 main: ${BUILD_DIR}/main
 
-${OBJECTS_DIR}/%.o: ${SRC_DIR}/%.c Makefile
+${OBJECTS_DIR}/%.o: ${SRC_DIR}/%.c ${DEPS_DIR}/%.d Makefile
 	mkdir -p ${OBJECTS_DIR}/$(dir $*.c)
 	mkdir -p ${DEPS_DIR}/$(dir $*.c)
 	${CC} ${DEP_ARGS} ${CC_ARGS} -c -o $@ $<
 
-${BUILD_DIR}/main: $(SOURCES:%.c=${OBJECTS_DIR}/%.o)
+${BUILD_DIR}/main: $(patsubst %.c, ${OBJECTS_DIR}/%.o, ${SOURCES})
 	mkdir -p ${BUILD_DIR}
 	${CC} ${CC_ARGS} -o $@ $^
 
-${DEPS_DIR}%.d: ${OBJECTS_DIR}/%.o
-	@:
+$(patsubst %.c, ${DEPS_DIR}/%.d, ${SOURCES}):
 
-include $(SOURCES:%.c=${DEPS_DIR}/%.d)
+include $(patsubst %.c, ${DEPS_DIR}/%.d, ${SOURCES})
 
 .PHONY: main

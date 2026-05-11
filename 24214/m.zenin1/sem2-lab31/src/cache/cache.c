@@ -83,3 +83,4 @@ void cache_destruct() {
     }
     map_uri_cache_entry_ptr_t_destruct(cache);
 }
+

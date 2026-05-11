@@ -14,10 +14,8 @@ int int_cmp(int l, int r) {
 #define NAME map_int_size_t
 #define KEY_TYPE int
 #define VALUE_TYPE size_t
-#define HASHMAP_DECL
 #define HASHMAP_IMPL
 #include "template/hashmap.h"
-#undef HASHMAP_DECL
 #undef HASHMAP_IMPL
 #undef KEY_TYPE
 #undef VALUE_TYPE

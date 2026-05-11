@@ -1,3 +1,5 @@
+#pragma once
+
 #include <poll.h>
 #include "scheduler/task_list.h"
 #include "scheduler/timer.h"

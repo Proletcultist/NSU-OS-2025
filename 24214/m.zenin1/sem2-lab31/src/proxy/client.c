@@ -275,6 +275,8 @@ void process_request_callback(ssize_t r, int err, void *udata) {
 
     http_state_machine_feed(&task->sm, (size_t) r);
     while (http_state_machine_step(&task->sm)) {
+        char *name, *value;
+        size_t name_size, value_size;
         switch (task->sm.state) {
             case MALFORMED:
                 http_state_machine_destruct(&task->sm);
@@ -308,8 +310,6 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                 }
                 break;
             case HEADER_AVAILABLE:
-                char *name, *value;
-                size_t name_size, value_size;
                 http_state_machine_get_header_name(&task->sm, task->sm.last_header, &name, &name_size);
                 http_state_machine_get_header_value(&task->sm, task->sm.last_header, &value, &value_size);
 

@@ -1,0 +1,38 @@
+mkdir -p build/obj/./
+mkdir -p build/deps/./
+gcc -MT build/obj/main.o -MMD -MP -MF build/deps/main.d -g -Wall -Wextra -I include -c -o build/obj/main.o src/main.c
+mkdir -p build/obj/./
+mkdir -p build/deps/./
+gcc -MT build/obj/vectors_definition.o -MMD -MP -MF build/deps/vectors_definition.d -g -Wall -Wextra -I include -c -o build/obj/vectors_definition.o src/vectors_definition.c
+mkdir -p build/obj/./
+mkdir -p build/deps/./
+gcc -MT build/obj/maps_definition.o -MMD -MP -MF build/deps/maps_definition.d -g -Wall -Wextra -I include -c -o build/obj/maps_definition.o src/maps_definition.c
+mkdir -p build/obj/cache/
+mkdir -p build/deps/cache/
+gcc -MT build/obj/cache/cache.o -MMD -MP -MF build/deps/cache/cache.d -g -Wall -Wextra -I include -c -o build/obj/cache/cache.o src/cache/cache.c
+mkdir -p build/obj/proxy/
+mkdir -p build/deps/proxy/
+gcc -MT build/obj/proxy/util.o -MMD -MP -MF build/deps/proxy/util.d -g -Wall -Wextra -I include -c -o build/obj/proxy/util.o src/proxy/util.c
+mkdir -p build/obj/proxy/
+mkdir -p build/deps/proxy/
+gcc -MT build/obj/proxy/client.o -MMD -MP -MF build/deps/proxy/client.d -g -Wall -Wextra -I include -c -o build/obj/proxy/client.o src/proxy/client.c
+mkdir -p build/obj/proxy/
+mkdir -p build/deps/proxy/
+gcc -MT build/obj/proxy/server.o -MMD -MP -MF build/deps/proxy/server.d -g -Wall -Wextra -I include -c -o build/obj/proxy/server.o src/proxy/server.c
+mkdir -p build/obj/proxy/
+mkdir -p build/deps/proxy/
+gcc -MT build/obj/proxy/proxy.o -MMD -MP -MF build/deps/proxy/proxy.d -g -Wall -Wextra -I include -c -o build/obj/proxy/proxy.o src/proxy/proxy.c
+mkdir -p build/obj/proxy/
+mkdir -p build/deps/proxy/
+gcc -MT build/obj/proxy/responses.o -MMD -MP -MF build/deps/proxy/responses.d -g -Wall -Wextra -I include -c -o build/obj/proxy/responses.o src/proxy/responses.c
+mkdir -p build/obj/./
+mkdir -p build/deps/./
+gcc -MT build/obj/http.o -MMD -MP -MF build/deps/http.d -g -Wall -Wextra -I include -c -o build/obj/http.o src/http.c
+mkdir -p build/obj/scheduler/
+mkdir -p build/deps/scheduler/
+gcc -MT build/obj/scheduler/aio_scheduler.o -MMD -MP -MF build/deps/scheduler/aio_scheduler.d -g -Wall -Wextra -I include -c -o build/obj/scheduler/aio_scheduler.o src/scheduler/aio_scheduler.c
+mkdir -p build/obj/scheduler/
+mkdir -p build/deps/scheduler/
+gcc -MT build/obj/scheduler/task_list.o -MMD -MP -MF build/deps/scheduler/task_list.d -g -Wall -Wextra -I include -c -o build/obj/scheduler/task_list.o src/scheduler/task_list.c
+mkdir -p build
+gcc -g -Wall -Wextra -I include -o build/main build/obj/main.o build/obj/vectors_definition.o build/obj/maps_definition.o build/obj/cache/cache.o build/obj/proxy/util.o build/obj/proxy/client.o build/obj/proxy/server.o build/obj/proxy/proxy.o build/obj/proxy/responses.o build/obj/http.o build/obj/scheduler/aio_scheduler.o build/obj/scheduler/task_list.o

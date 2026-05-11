@@ -2,6 +2,7 @@
 
 #include <time.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <sys/types.h>
 #include "scheduler/timer.h"
 
