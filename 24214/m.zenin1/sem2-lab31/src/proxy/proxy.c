@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <stddef.h>
+#include <signal.h>
 #include "scheduler/aio_scheduler.h"
 #include "http.h"
 #include "proxy/responses.h"
@@ -17,13 +18,40 @@
 #include "proxy/util.h"
 
 static aio_scheduler_t sched;
+static int skip_poll_pipe[2];
+bool alive;
+
+static void close_listening_callback(int err, void *udata) {
+    task_t *task = udata;
+    int close_err;
+    do {
+        close_err = close(task->attrs.ctl.fd);
+    } while (close_err < 0 && errno == EINTR);
+}
+
+static void stop_signal_handler(int sig) {
+    if (alive) {
+        // Write to skip poll and leave event loop
+        write(skip_poll_pipe[1], "1", 1);
+        alive = false;
+    }
+}
 
 static void accept_connection(ssize_t r, int err, void *udata) {
     task_t *task = udata;
 
+    // If task was canceled
+    if (r < 0 && err == ECANCELED) {
+        return;
+    }
+
     struct sockaddr connected_addr;
     socklen_t connected_len = sizeof(connected_addr);
-    int fd = accept(task->attrs.io.fd, &connected_addr, &connected_len);
+
+    int fd;
+    do {
+        fd = accept(task->attrs.io.fd, &connected_addr, &connected_len);
+    } while (fd < 0 && errno == EINTR);
 
     int flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
@@ -109,6 +137,17 @@ void start_proxy(struct in_addr ip, in_port_t port) {
     }
 
     sched = aio_scheduler_construct();
+    pipe(skip_poll_pipe);
+    alive = true;
+
+    struct sigaction act;
+    act.sa_handler = stop_signal_handler;
+    act.sa_flags = 0;
+    sigemptyset(&act.sa_mask);
+    sigaddset(&act.sa_mask, SIGINT);
+    sigaddset(&act.sa_mask, SIGTERM);
+    sigaction(SIGINT, &act, NULL);
+    sigaction(SIGTERM, &act, NULL);
 
     task_t delegate_task = {
        .type = DELEGATE,
@@ -116,6 +155,13 @@ void start_proxy(struct in_addr ip, in_port_t port) {
            .fd = listening,
            .callback = NULL
        }
+    };
+    task_t delegate_skip_pipe_task = {
+        .type = DELEGATE,
+        .attrs.ctl = {
+            .fd = skip_poll_pipe[0],
+            .callback = NULL
+        }
     };
     task_t accept_task = {
        .type = ACCEPT_CONNECTION_REQUESTS,
@@ -126,11 +172,50 @@ void start_proxy(struct in_addr ip, in_port_t port) {
            .callback = accept_connection
        }
     };
+    task_t skip_task = {
+        .type = READ_REQUEST,
+        .attrs.io = {
+            .as_first = false,
+            .fd = skip_poll_pipe[0],
+            .buffer = NULL,
+            .size = 0,
+            .callback = NULL
+        }
+    };
 
     aio_scheduler_schedule(&sched, &delegate_task);
+    aio_scheduler_schedule(&sched, &delegate_skip_pipe_task);
     aio_scheduler_schedule(&sched, &accept_task);
+    aio_scheduler_schedule(&sched, &skip_task);
 
-    while (true) {
-        aio_scheduler_proceed(&sched);
+    while (alive) {
+        aio_scheduler_proceed(&sched, RUN_DEFAULT);
     }
+
+    // Undelegate listening socket
+    task_t undelegate_task = {
+       .type = UNDELEGATE,
+       .attrs.ctl = {
+           .fd = listening,
+           .data = &undelegate_task,
+           .callback = close_listening_callback
+       }
+    };
+    // Undelegate skip poll pipe
+    task_t undelegate_task2 = {
+       .type = UNDELEGATE,
+       .attrs.ctl = {
+           .fd = skip_poll_pipe[0],
+           .callback = NULL
+       }
+    };
+    aio_scheduler_schedule(&sched, &undelegate_task);
+    aio_scheduler_schedule(&sched, &undelegate_task2);
+
+    while (aio_scheduler_proceed(&sched, RUN_NO_TIMER_WAIT)) {}
+
+    aio_scheduler_destruct(&sched);
+    cache_destruct();
+    close(skip_poll_pipe[0]);
+    close(skip_poll_pipe[1]);
 }

@@ -36,10 +36,16 @@
 #undef HASHMAP_DECL
 #undef NAME
 
+typedef enum scheduler_run_mode {
+    RUN_NO_TIMER_WAIT,      // Poll for i/o, don't block if there are no i/o events to wait for
+    RUN_DEFAULT             // Poll for i/o, if there are no i/o events to wait for, block until timer fires
+} scheduler_run_mode_t;
+
 typedef struct aio_scheduler {
     map_int_size_t fdToIndex;
 
     time_t loop_time;
+    size_t io_events;
 
     vector_pollfd_t fds;
     vector_task_list_t task_lists;
@@ -50,5 +56,5 @@ typedef struct aio_scheduler {
 
 aio_scheduler_t aio_scheduler_construct();
 void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task);
-void aio_scheduler_proceed(aio_scheduler_t *sched);
+bool aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode);
 void aio_scheduler_destruct(aio_scheduler_t *sched);
