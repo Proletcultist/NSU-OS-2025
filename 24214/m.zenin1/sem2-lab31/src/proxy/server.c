@@ -120,10 +120,6 @@ static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_
     return prev;
 }
 
-static proxy_client_t* send_uncached_to_all_clients(proxy_client_t **clients, char *buffer, size_t size, bool last) {
-    // Create buffer with ref counter, count reference from this function as one of them and increment it whilst scheduling writing on clients
-}
-
 static void early_fail_server_connection(proxy_server_t server, char *msg, size_t msg_size) {
     cache_delete(server.uri);
 
@@ -560,48 +556,42 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                 bool last = (task->server->has_content_length && task->server->content_length == 0);
                 bool finished = (last || size == cap);
 
-                if (task->sm.status == 200) {
-                    cache_block_external_t *head_block = malloc(sizeof(cache_block_external_t));
-                    *head_block = (cache_block_external_t) {
-                        .external = true,
-                        .size = size,
-                        .cap = cap,
-                        .finished = finished,
-                        .data = buffer
+                if (task->sm.status != 200) {
+                    cache_delete(task->server->uri);
+                }
+
+                cache_block_external_t *head_block = malloc(sizeof(cache_block_external_t));
+                *head_block = (cache_block_external_t) {
+                    .external = true,
+                    .size = size,
+                    .cap = cap,
+                    .finished = finished,
+                    .data = buffer
+                };
+
+                cache_block_in_place_t *following_block = NULL;
+                if (!last && finished) {
+                    size_t new_cap = task->server->has_content_length ? task->server->content_length : DATA_CHUNK_SIZE;
+                    following_block = malloc(sizeof(cache_block_in_place_t) + new_cap);
+                    *following_block = (cache_block_in_place_t) {
+                        .external = false,
+                        .size = 0,
+                        .cap = new_cap,
+                        .finished = false
                     };
+                }
 
-                    cache_block_in_place_t *following_block = NULL;
-                    if (!last && finished) {
-                        size_t new_cap = task->server->has_content_length ? task->server->content_length : DATA_CHUNK_SIZE;
-                        following_block = malloc(sizeof(cache_block_in_place_t) + new_cap);
-                        *following_block = (cache_block_in_place_t) {
-                            .external = false,
-                            .size = 0,
-                            .cap = new_cap,
-                            .finished = false
-                        };
-                    }
+                cache_entry_add_block(task->server->cache_entry, (cache_block_t*) head_block);
+                if (following_block != NULL) {
+                    cache_entry_add_block(task->server->cache_entry, (cache_block_t*) following_block);
+                }
+                send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, buffer, size, last);
 
-                    cache_entry_add_block(task->server->cache_entry, (cache_block_t*) head_block);
-                    if (following_block != NULL) {
-                        cache_entry_add_block(task->server->cache_entry, (cache_block_t*) following_block);
-                    }
-                    send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, buffer, size, last);
-
-                    if (!last) {
-                        write_next_cache_block((server_task_t*) task);
-                    }
-                    else {
-                        close_server_connection((server_task_t*) task);
-                    }
+                if (!last) {
+                    write_next_cache_block((server_task_t*) task);
                 }
                 else {
-                    cache_delete(task->server->uri);
-
-                    if (task->server->has_content_length) {
-                    }
-                    else {
-                    }
+                    close_server_connection((server_task_t*) task);
                 }
                 return;
             case READING_REQUEST_LINE:
