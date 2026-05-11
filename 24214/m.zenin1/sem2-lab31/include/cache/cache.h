@@ -14,6 +14,7 @@
 struct proxy_client;
 
 typedef struct cache_entry {
+    uri_t uri;
     size_t references;
     cache_block_t *first_block;
     cache_block_t *last_block;

@@ -327,10 +327,11 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                         *task->client->entry = CACHE_ENTRY_INITIALIZER;
                         // One for client and one for server
                         task->client->entry->references = 2;
+                        task->client->entry->uri = task->sm.uri;
                         cache_entry_add_pending(task->client->entry, task->client);
                         cache_enchache(task->sm.uri, task->client->entry);
 
-                        establish_connect_with_server(task->client->sched, task->sm.uri, task->client->entry);
+                        establish_connect_with_server(task->client->sched, task->client->entry);
 
                         // Delete uri from state machine, so it will not deallocate it
                         task->sm.uri.buffer = NULL;

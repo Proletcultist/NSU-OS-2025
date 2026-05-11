@@ -121,12 +121,10 @@ static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_
 }
 
 static void early_fail_server_connection(proxy_server_t server, char *msg, size_t msg_size) {
-    cache_delete(server.uri);
+    cache_delete(server.cache_entry->uri);
 
     send_cached_to_all_clients(&server, &server.cache_entry->pending, msg, msg_size, true);
     cache_entry_put(server.cache_entry);
-
-    free(server.uri.buffer);
 }
 
 static void close_server_connection(server_task_t *task) {
@@ -143,11 +141,10 @@ static void close_server_connection(server_task_t *task) {
 
 static void fail_server_connection(server_task_t *task, char *msg, size_t msg_size) {
     task->server->state = SERVER_DISCONNECTED;
-    cache_delete(task->server->uri);
+    cache_delete(task->server->cache_entry->uri);
 
     send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, msg, msg_size, true);
 
-    free(task->server->uri.buffer);
     close_server_connection(task);
 }
 
@@ -189,19 +186,18 @@ static void server_health_check_callback(time_t time, void *udata) {
     }
 }
 
-void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entry_t *entry) {
+void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry) {
     proxy_server_t server_val = {
         .state = SERVER_CONNECTION_IN_PROGRESS,
         .sched = sched,
-        .uri = uri,
         .has_content_length = false,
         .content_length = 0,
         .health_check_timer = NULL,
         .cache_entry = entry
     };
 
-    char *port = *uri.port == '\0' ? "80" : uri.port;
-    struct addrinfo *res = resolve_address(uri.hostname, port);
+    char *port = *entry->uri.port == '\0' ? "80" : entry->uri.port;
+    struct addrinfo *res = resolve_address(entry->uri.hostname, port);
     if (res == NULL) {
         early_fail_server_connection(server_val, not_found_response, not_found_response_size);
         return;
@@ -239,7 +235,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
         current_try = current_try->ai_next;
     } while (err < 0 && current_try != NULL);
     if (err < 0 && current_try == NULL) {
-        fprintf(stderr, "[Error] Failed to connect to %s: %s\n", server->uri.hostname, strerror(errno));
+        fprintf(stderr, "[Error] Failed to connect to %s: %s\n", server->cache_entry->uri.hostname, strerror(errno));
         early_fail_server_connection(*server, bad_gateway_response, bad_gateway_response_size);
         free(server);
         freeaddrinfo(res);
@@ -247,8 +243,9 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
         return;
     }
     else if (err >= 0) {
-        fprintf(stderr, "[Info] Connected to %s successfully\n", server->uri.hostname);
+        fprintf(stderr, "[Info] Connected to %s successfully\n", server->cache_entry->uri.hostname);
         server->state = SERVER_RECEIVING_HEADERS;
+        freeaddrinfo(res);
     }
 
     // Schedule delegate server fd
@@ -289,7 +286,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entr
     };
     generate_request((char**) &write_req_task->task.attrs.io.buffer,
                      &write_req_task->task.attrs.io.size,
-                     uri);
+                     server->cache_entry->uri);
 
     // Schedule response reading
     response_analysis_task_t *read_res_task = malloc(sizeof(response_analysis_task_t));
@@ -329,7 +326,7 @@ void try_connect_callback(ssize_t r, int err, void *udata) {
     getsockopt(task->task.attrs.io.fd, SOL_SOCKET, SO_ERROR, &err, &len);
 
     if (err == 0) {
-        fprintf(stderr, "[Info] Connected to %s successfully\n", task->server->uri.hostname);
+        fprintf(stderr, "[Info] Connected to %s successfully\n", task->server->cache_entry->uri.hostname);
         task->server->state = SERVER_RECEIVING_HEADERS;
         freeaddrinfo(task->first);
         free(task);
@@ -350,10 +347,15 @@ void try_connect_callback(ssize_t r, int err, void *udata) {
             current_try = current_try->ai_next;
         }
         if (connect_res < 0 && current_try == NULL) {
-            fprintf(stderr, "[Error] Failed to connect to %s\n", task->server->uri.hostname);
+            fprintf(stderr, "[Error] Failed to connect to %s\n", task->server->cache_entry->uri.hostname);
             fail_server_connection((server_task_t*) task, bad_gateway_response, bad_gateway_response_size);
             freeaddrinfo(task->first);
             return;
+        }
+        else if (connect_res >= 0) {
+            fprintf(stderr, "[Info] Connected to %s successfully\n", task->server->cache_entry->uri.hostname);
+            task->server->state = SERVER_RECEIVING_HEADERS;
+            freeaddrinfo(task->first);
         }
     }
 }
@@ -398,17 +400,17 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
     }
 
     if (w < 0) {
-        fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->server->uri.hostname, strerror(err));
+        fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->server->cache_entry->uri.hostname, strerror(err));
         fail_server_connection((server_task_t*) task, NULL, 0);
         return;
     }
     else if (w == 0) {
         if (task->server->has_content_length) {
-            fprintf(stderr, "[Error] Server %s terminated connection\n", task->server->uri.hostname);
+            fprintf(stderr, "[Error] Server %s terminated connection\n", task->server->cache_entry->uri.hostname);
             fail_server_connection((server_task_t*) task, NULL, 0);
         }
         else {
-            fprintf(stderr, "[Info] Server %s terminated connection\n", task->server->uri.hostname);
+            fprintf(stderr, "[Info] Server %s terminated connection\n", task->server->cache_entry->uri.hostname);
 
             task->server->cache_entry->last_block->finished = true;
             send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, NULL, 0, true);
@@ -479,10 +481,10 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
 
     // Check for errors or connection closed
     if (r < 0) {
-        fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->server->uri.hostname, strerror(err));
+        fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->server->cache_entry->uri.hostname, strerror(err));
     }
     else if (r == 0) {
-        fprintf(stderr, "[Error] Server %s terminated connection\n", task->server->uri.hostname);
+        fprintf(stderr, "[Error] Server %s terminated connection\n", task->server->cache_entry->uri.hostname);
     }
     if (r <= 0) {
         http_state_machine_destruct(&task->sm);
@@ -504,7 +506,7 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                 http_state_machine_get_header_name(&task->sm, task->sm.last_header, &name, &name_size);
                 http_state_machine_get_header_value(&task->sm, task->sm.last_header, &value, &value_size);
 
-                fprintf(stderr, "[Info] %s Field-name: \"", task->server->uri.hostname);
+                fprintf(stderr, "[Info] %s Field-name: \"", task->server->cache_entry->uri.hostname);
                 for (size_t i = 0; i < name_size; i++) {
                     fprintf(stderr, "%c", name[i]);
                 }
@@ -557,7 +559,7 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                 bool finished = (last || size == cap);
 
                 if (task->sm.status != 200) {
-                    cache_delete(task->server->uri);
+                    cache_delete(task->server->cache_entry->uri);
                 }
 
                 cache_block_external_t *head_block = malloc(sizeof(cache_block_external_t));
