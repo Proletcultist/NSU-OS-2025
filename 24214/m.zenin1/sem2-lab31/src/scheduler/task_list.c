@@ -81,4 +81,6 @@ void task_list_delete(task_list_t *tl, task_t *prev, task_t *this) {
 }
 
 void task_list_destruct(task_list_t *tl) {
+    // Free sentinel node
+    free(tl->first);
 }

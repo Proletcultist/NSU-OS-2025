@@ -32,6 +32,7 @@ void cache_entry_put(cache_entry_t *entry) {
         return;
     }
 
+    free(entry->uri.buffer);
     cache_block_t *cursor = entry->first_block;
     while (cursor != NULL) {
         cache_block_t *next = cursor->next;
@@ -43,6 +44,7 @@ void cache_entry_put(cache_entry_t *entry) {
 
         cursor = next;
     }
+    free(entry);
 }
 
 void cache_enchache(uri_t uri, cache_entry_t *entry) {

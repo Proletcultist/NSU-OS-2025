@@ -22,7 +22,6 @@ typedef struct proxy_server {
     proxy_server_state_t state;
     int fd;
     aio_scheduler_t *sched;
-    uri_t uri;
     bool has_content_length;
     size_t content_length;
 
@@ -60,7 +59,7 @@ typedef struct response_analysis_task {
 
 typedef server_task_t request_writing_task_t;
 
-void establish_connect_with_server(aio_scheduler_t *sched, uri_t uri, cache_entry_t *entry);
+void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry);
 void try_connect_callback(ssize_t r, int err, void *udata);
 void write_request_callback(ssize_t w, int err, void *udata);
 void analyze_response_callback(ssize_t r, int err, void *udata);
