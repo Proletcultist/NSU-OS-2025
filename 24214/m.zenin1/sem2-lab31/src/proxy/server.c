@@ -18,7 +18,11 @@ static void write_next_cache_block(server_task_t *task);
 static void server_cleanup_callback(int err, void *udata) {
     server_task_t *task = udata;
 
-    close(task->server->fd);
+    int close_err;
+    do {
+        close_err = close(task->server->fd);
+    } while (close_err < 0 && errno == EINTR);
+
     if (task->server->health_check_timer != NULL) {
         task->server->health_check_timer->server = NULL;
     }
@@ -148,14 +152,14 @@ static void fail_server_connection(server_task_t *task, char *msg, size_t msg_si
     close_server_connection(task);
 }
 
-static void server_health_check_callback(time_t time, void *udata) {
+static void server_health_check_callback(int err, time_t time, void *udata) {
     server_health_check_timer_t *timer = udata;
 
     if (timer->server == NULL) {
         free(timer);
         return;
     }
-    else if (timer->server->state == SERVER_DISCONNECTED) {
+    else if (timer->server->state == SERVER_DISCONNECTED || err == ECANCELED) {
         timer->server->health_check_timer = NULL;
         free(timer);
         return;
@@ -239,7 +243,12 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
         early_fail_server_connection(*server, bad_gateway_response, bad_gateway_response_size);
         free(server);
         freeaddrinfo(res);
-        close(server_fd);
+
+        int close_err;
+        do {
+            close_err = close(server_fd);
+        } while (close_err < 0 && errno == EINTR);
+
         return;
     }
     else if (err >= 0) {
@@ -316,7 +325,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
 
 void try_connect_callback(ssize_t r, int err, void *udata) {
     try_connect_to_server_task_t *task = udata;
-    if (task->server->state != SERVER_CONNECTION_IN_PROGRESS) {
+    if (task->server->state != SERVER_CONNECTION_IN_PROGRESS || (r < 0 && err == ECANCELED)) {
         freeaddrinfo(task->first);
         free(task);
         return;
@@ -364,8 +373,8 @@ void write_request_callback(ssize_t w, int err, void *udata) {
     request_writing_task_t *task = udata;
     free(task->task.attrs.io.buffer);
     
-    if (task->server->state != SERVER_RECEIVING_HEADERS &&
-        task->server->state != SERVER_RECEIVING_BODY) {
+    if ((task->server->state != SERVER_RECEIVING_HEADERS &&
+        task->server->state != SERVER_RECEIVING_BODY) || (w < 0 && err == ECANCELED)) {
         free(task);
         return;
     }
@@ -394,7 +403,7 @@ void write_request_callback(ssize_t w, int err, void *udata) {
 static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
     server_task_t *task = udata;
 
-    if (task->server->state != SERVER_RECEIVING_BODY) {
+    if (task->server->state != SERVER_RECEIVING_BODY || (w < 0 && err == ECANCELED)) {
         free(task);
         return;
     }
@@ -473,7 +482,7 @@ static void write_next_cache_block(server_task_t *task) {
 void analyze_response_callback(ssize_t r, int err, void *udata) {
     response_analysis_task_t *task = udata;
 
-    if (task->server->state != SERVER_RECEIVING_HEADERS) {
+    if (task->server->state != SERVER_RECEIVING_HEADERS || (r < 0 && err == ECANCELED)) {
         http_state_machine_destruct(&task->sm);
         free(task);
         return;
@@ -534,17 +543,6 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                 }
                 break;
             case COMPLETE:
-                printf("\nBuffer content:\n");
-                printf("\033[32m");
-                for (size_t i = 0; i < task->sm.analyzed; i++) {
-                    printf("%c", task->sm.data.arr[i]);
-                }
-                printf("\033[0m");
-                for (size_t i = task->sm.analyzed; i < task->sm.data.size; i++) {
-                    printf("%c", task->sm.data.arr[i]);
-                }
-                printf("\n");
-
                 task->server->state = SERVER_RECEIVING_BODY;
 
                 char *buffer = task->sm.data.arr;

@@ -70,3 +70,12 @@ cache_entry_t* cache_get_ref(uri_t uri) {
         return *ptr;
     }
 }
+
+void cache_destruct() {
+    for (size_t i = 0; i < cache.size; i++) {
+        if (cache.arr[i].type == VALUE_NODE) {
+            cache_entry_put(cache.arr[i].value);
+        }
+    }
+    map_uri_cache_entry_ptr_t_destruct(cache);
+}
