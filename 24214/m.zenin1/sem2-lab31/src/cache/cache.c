@@ -2,7 +2,11 @@
 #include <stdlib.h>
 #include "cache/cache.h"
 
-static map_uri_cache_entry_ptr_t cache = (map_uri_cache_entry_ptr_t) HASHMAP_INITIALIZER;
+static map_uri_cache_entry_ptr_t cache;
+
+void cache_init() {
+    cache = (map_uri_cache_entry_ptr_t) HASHMAP_INITIALIZER;
+}
 
 void cache_entry_add_pending(cache_entry_t *entry, proxy_client_t *client) {
     client->next = entry->pending;

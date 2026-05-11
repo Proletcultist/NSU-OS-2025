@@ -1,17 +1,21 @@
 #include <stdlib.h>
 #include "scheduler/task_list.h"
 
-task_list_t task_list_construct() {
+int task_list_construct(task_list_t *ret) {
     task_t *sentinel = malloc(sizeof(task_t));
+    if (sentinel == NULL) {
+        return -1;
+    }
     sentinel->next = NULL;
 
-    return (task_list_t)
-           {
-               .first = sentinel,
-               .last = sentinel,
-               .reads_amount = 0,
-               .writes_amount = 0
-           };
+    *ret = (task_list_t) {
+       .first = sentinel,
+       .last = sentinel,
+       .reads_amount = 0,
+       .writes_amount = 0
+    };
+
+    return 0;
 }
 
 void task_list_append(task_list_t *tl, task_t *task) {

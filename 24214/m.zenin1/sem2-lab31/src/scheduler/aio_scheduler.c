@@ -8,17 +8,20 @@
 #include <errno.h>
 #include "scheduler/aio_scheduler.h"
 
-aio_scheduler_t aio_scheduler_construct() {
-    aio_scheduler_t ret = {
-                            .fds = (vector_pollfd_t) VECTOR_INITIALIZER,
-                            .task_lists = (vector_task_list_t) VECTOR_INITIALIZER,
-                            .timers = (vector_timer_t) VECTOR_INITIALIZER,
-                            .fdToIndex = (map_int_size_t) HASHMAP_INITIALIZER,
-                            .io_events = 0
-                          };
-    ret.pending_tasks = task_list_construct();
+int aio_scheduler_construct(aio_scheduler_t *sched) {
+    *sched = (aio_scheduler_t) {
+      .fds = (vector_pollfd_t) VECTOR_INITIALIZER,
+      .task_lists = (vector_task_list_t) VECTOR_INITIALIZER,
+      .timers = (vector_timer_t) VECTOR_INITIALIZER,
+      .fdToIndex = (map_int_size_t) HASHMAP_INITIALIZER,
+      .io_events = 0
+    };
 
-    return ret;
+    if (task_list_construct(&sched->pending_tasks)) {
+        return -1;
+    }
+
+    return 0;
 }
 
 static inline void aio_delete_io_task(aio_scheduler_t *sched, struct pollfd *pollfd, task_list_t *tasks, task_t *prev, task_t *this) {
@@ -40,7 +43,12 @@ static void delegate(aio_scheduler_t *sched, task_t *task) {
                                         .events = 0,
                                         .revents = 0
                                       });
-    vector_task_list_t_push(&sched->task_lists, task_list_construct());
+
+    task_list_t new_tl;
+    // TODO: Check for error
+    task_list_construct(&new_tl);
+
+    vector_task_list_t_push(&sched->task_lists, new_tl);
     map_int_size_t_set(&sched->fdToIndex, task->attrs.ctl.fd, sched->fds.size - 1);
     
     if (task->attrs.ctl.callback) {
