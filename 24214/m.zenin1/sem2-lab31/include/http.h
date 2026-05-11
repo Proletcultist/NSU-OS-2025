@@ -78,7 +78,7 @@ typedef struct http_state_machine {
     vector_char_t data;
 } http_state_machine_t;
 
-void http_state_machine_alloc(http_state_machine_t *sm, void **buffer, size_t *size);
+int http_state_machine_alloc(http_state_machine_t *sm, void **buffer, size_t *size);
 void http_state_machine_feed(http_state_machine_t *sm, size_t size);
 bool http_state_machine_step(http_state_machine_t *sm);
 void http_state_machine_destruct(http_state_machine_t *sm);

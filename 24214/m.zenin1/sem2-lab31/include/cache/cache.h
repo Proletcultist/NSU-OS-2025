@@ -39,7 +39,7 @@ typedef cache_entry_t *cache_entry_ptr_t;
 #undef HASHMAP_DECL
 #undef NAME
 
-void cache_enchache(uri_t uri, cache_entry_t *entry);
+int cache_enchache(uri_t uri, cache_entry_t *entry);
 void cache_delete(uri_t uri);
 cache_entry_t* cache_get_ref(uri_t uri);
 void cache_destruct();

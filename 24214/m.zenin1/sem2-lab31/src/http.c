@@ -327,18 +327,19 @@ static void analyze_req_line(http_state_machine_t *sm) {
     }
 
     sm->uri.buffer = malloc(hostname_size + 1 + port_size + 1 + path_size + 1);
+    if (sm->uri.buffer != NULL) {
+        sm->uri.hostname = sm->uri.buffer;
+        memcpy(sm->uri.buffer, sm->data.arr + hostname_off, hostname_size);
+        sm->uri.buffer[hostname_size] = '\0';
 
-    sm->uri.hostname = sm->uri.buffer;
-    memcpy(sm->uri.buffer, sm->data.arr + hostname_off, hostname_size);
-    sm->uri.buffer[hostname_size] = '\0';
+        sm->uri.port = sm->uri.buffer + hostname_size + 1;
+        memcpy(sm->uri.buffer + hostname_size + 1, sm->data.arr + port_off, port_size);
+        sm->uri.buffer[hostname_size + 1 + port_size] = '\0';
 
-    sm->uri.port = sm->uri.buffer + hostname_size + 1;
-    memcpy(sm->uri.buffer + hostname_size + 1, sm->data.arr + port_off, port_size);
-    sm->uri.buffer[hostname_size + 1 + port_size] = '\0';
-
-    sm->uri.path = sm->uri.buffer + hostname_size + 1 + port_size + 1;
-    memcpy(sm->uri.buffer + hostname_size + 1 + port_size + 1, sm->data.arr + path_off, path_size);
-    sm->uri.buffer[hostname_size + 1 + port_size + 1 + path_size] = '\0';
+        sm->uri.path = sm->uri.buffer + hostname_size + 1 + port_size + 1;
+        memcpy(sm->uri.buffer + hostname_size + 1 + port_size + 1, sm->data.arr + path_off, path_size);
+        sm->uri.buffer[hostname_size + 1 + port_size + 1 + path_size] = '\0';
+    }
 
     sm->state = READ_REQUEST_LINE;
     sm->available_lines--;
@@ -413,7 +414,7 @@ static void analyze_header(http_state_machine_t *sm) {
     sm->available_lines--;
 }
 
-void http_state_machine_alloc(http_state_machine_t *sm, void **buffer, size_t *size) {
+int http_state_machine_alloc(http_state_machine_t *sm, void **buffer, size_t *size) {
     if (sm->discarding) {
         size_t discard_size = sm->analyzed;
         if (sm->state == READING_HEADER) {
@@ -426,9 +427,12 @@ void http_state_machine_alloc(http_state_machine_t *sm, void **buffer, size_t *s
         sm->last_header.name_off -= discard_size;
         sm->last_header.value_off -= discard_size;
     }
-    vector_char_t_reserve(&sm->data, sm->data.size + MIN_CHUNK_SIZE);
+    if (vector_char_t_reserve(&sm->data, sm->data.size + MIN_CHUNK_SIZE)) {
+        return -1;
+    }
     *buffer = sm->data.arr + sm->data.size;
     *size = sm->data.cap - sm->data.size;
+    return 0;
 }
 
 void http_state_machine_feed(http_state_machine_t *sm, size_t size) {

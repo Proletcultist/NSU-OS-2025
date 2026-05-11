@@ -23,3 +23,6 @@ extern size_t bad_gateway_response_size;
 
 extern char gateway_timeout_response[];
 extern size_t gateway_timeout_response_size;
+
+extern char internal_server_error_response[];
+extern size_t internal_server_error_response_size;

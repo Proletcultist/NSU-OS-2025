@@ -24,3 +24,6 @@ size_t bad_gateway_response_size = sizeof(bad_gateway_response);
 
 char gateway_timeout_response[] = "HTTP/1.0 504 Gateway Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 size_t gateway_timeout_response_size = sizeof(gateway_timeout_response);
+
+char internal_server_error_response[] = "HTTP/1.0 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+size_t internal_server_error_response_size = sizeof(internal_server_error_response);

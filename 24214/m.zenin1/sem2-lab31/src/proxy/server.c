@@ -58,22 +58,38 @@ static void cleanup_disconnected_beg(proxy_client_t **clients) {
 static void send_task_to_client(proxy_server_t *server, client_task_t *task) {
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
 
-    // If there is no timer for client - create one
-    if (task->client->health_check_timer == NULL) {
-        client_health_check_timer_t *timer_task = malloc(sizeof(client_health_check_timer_t));
-        *timer_task = (client_health_check_timer_t) {
+    // If client timer isn't started - start it
+    if (task->client->health_check_timer->client == NULL) {
+        *task->client->health_check_timer = (client_health_check_timer_t) {
             .task.type = ADD_TIMER,
             .task.attrs.timer = {
                 .time = CLIENT_WAIT_FOR_DATA_TIMEOUT,
                 .callback = client_health_check_callback,
-                .data = timer_task
+                .data = task->client->health_check_timer
             },
             .client = task->client,
             .cleanup_client = false,
             .last_update = server->sched->loop_time
         };
-        task->client->health_check_timer = timer_task;
-        aio_scheduler_schedule(task->client->sched, (task_t*) timer_task);
+        aio_scheduler_schedule(task->client->sched, (task_t*) task->client->health_check_timer);
+    }
+}
+
+static void send_to_client_fallback(proxy_server_t *server, proxy_client_t *client) {
+    // If client timer isn't started - start it
+    if (client->health_check_timer->client == NULL) {
+        *client->health_check_timer = (client_health_check_timer_t) {
+            .task.type = ADD_TIMER,
+            .task.attrs.timer = {
+                .time = CLIENT_WAIT_FOR_DATA_TIMEOUT,
+                .callback = client_health_check_callback,
+                .data = client->health_check_timer
+            },
+            .client = client,
+            .cleanup_client = true,
+            .last_update = server->sched->loop_time
+        };
+        aio_scheduler_schedule(client->sched, (task_t*) client->health_check_timer);
     }
 }
 
@@ -103,22 +119,29 @@ static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_
         }
 
         client_task_t *task = malloc(sizeof(client_task_t));
-        *task = (client_task_t) {
-            .task.type = WRITE_REQUEST,
-            .task.attrs.io = {
-                .fd = cursor->fd,
-                .as_first = false,
-                .buffer = buffer,
-                .size = size,
-                .data = task,
-                .callback = callback
-            },
-            .client = cursor
-        };
-        send_task_to_client(server, task);
+        if (task != NULL) {
+            *task = (client_task_t) {
+                .task.type = WRITE_REQUEST,
+                .task.attrs.io = {
+                    .fd = cursor->fd,
+                    .as_first = false,
+                    .buffer = buffer,
+                    .size = size,
+                    .data = task,
+                    .callback = callback
+                },
+                .client = cursor
+            };
+            send_task_to_client(server, task);
 
-        prev = cursor;
-        cursor = cursor->next;
+            prev = cursor;
+            cursor = cursor->next;
+        }
+        else {
+            send_to_client_fallback(server, cursor);
+            prev->next = next;
+            cursor = next;
+        }
     }
 
     return prev;
@@ -190,7 +213,9 @@ static void server_health_check_callback(int err, time_t time, void *udata) {
     }
 }
 
-void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry) {
+int establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry) {
+    cache_enchache(entry->uri, entry);
+
     proxy_server_t server_val = {
         .state = SERVER_CONNECTION_IN_PROGRESS,
         .sched = sched,
@@ -204,7 +229,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
     struct addrinfo *res = resolve_address(entry->uri.hostname, port);
     if (res == NULL) {
         early_fail_server_connection(server_val, not_found_response, not_found_response_size);
-        return;
+        return 0;
     }
 
     int server_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -249,7 +274,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
             close_err = close(server_fd);
         } while (close_err < 0 && errno == EINTR);
 
-        return;
+        return 0;
     }
     else if (err >= 0) {
         fprintf(stderr, "[Info] Connected to %s successfully\n", server->cache_entry->uri.hostname);
@@ -321,6 +346,8 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
     aio_scheduler_schedule(sched, (task_t*) write_req_task);
     aio_scheduler_schedule(sched, (task_t*) read_res_task);
     aio_scheduler_schedule(sched, (task_t*) timer_task);
+
+    return 0;
 }
 
 void try_connect_callback(ssize_t r, int err, void *udata) {

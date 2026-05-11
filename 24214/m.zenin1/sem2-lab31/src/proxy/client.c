@@ -125,6 +125,22 @@ void client_write_cached_callback(ssize_t r, int err, void *udata) {
     free(task);
 }
 
+static int client_prepare_for_waiting(proxy_client_t *client) {
+    client->state = CLIENT_WAITS_FOR_DATA;
+    client->health_check_timer->client = NULL;
+    client->health_check_timer = NULL;
+
+    client_health_check_timer_t *timer_task = malloc(sizeof(client_health_check_timer_t));
+    if (timer_task != NULL) {
+        client->health_check_timer = timer_task;
+        timer_task->client = NULL;
+        return 0;
+    }
+    else {
+        return -1;
+    }
+}
+
 static void read_cache_callback(ssize_t r, int err, void *udata) {
     client_read_cache_task_t *task = udata;
 
@@ -165,11 +181,13 @@ static void read_cache_callback(ssize_t r, int err, void *udata) {
     }
     else {
         // No data available - add to pending
-        task->client->state = CLIENT_WAITS_FOR_DATA;
-        task->client->health_check_timer->client = NULL;
-        task->client->health_check_timer = NULL;
-        cache_entry_add_pending(task->client->entry, task->client);
-        free(task);
+        if (client_prepare_for_waiting(task->client)) {
+            client_silent_disconnect((client_task_t*) task);
+        }
+        else {
+            cache_entry_add_pending(task->client->entry, task->client);
+            free(task);
+        }
     }
 }
 
@@ -285,6 +303,13 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                 client_respond_error((client_task_t*) task, bad_request_response, bad_request_response_size);
                 return;
             case READ_REQUEST_LINE:
+                if (task->sm.uri.buffer == NULL) {
+                    fprintf(stderr, "[Error] Failed allocation of buffer for uri\n");
+                    http_state_machine_destruct(&task->sm);
+                    client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
+                    return;
+                }
+
                 fprintf(stderr, "[Info] %s Parsed hostname: \"%s\" port: \"%s\", path: \"%s\"\n", task->client->client_ip, task->sm.uri.hostname, task->sm.uri.port, task->sm.uri.path);
                 switch (task->sm.method) {
                     case POST:
@@ -341,22 +366,38 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                         fprintf(stderr, "[Info] %s Cache miss for %s\n", task->client->client_ip, task->sm.uri.hostname);
 
                         // Start waiting for data from server and forget about timer - it will be cleaned up
-                        task->client->state = CLIENT_WAITS_FOR_DATA;
-                        task->client->health_check_timer->client = NULL;
-                        task->client->health_check_timer = NULL;
+                        if (client_prepare_for_waiting(task->client)) {
+                            http_state_machine_destruct(&task->sm);
+                            client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
+                            return;
+                        }
 
                         task->client->entry = malloc(sizeof(cache_entry_t));
-                        *task->client->entry = CACHE_ENTRY_INITIALIZER;
-                        // One for client and one for server
-                        task->client->entry->references = 2;
-                        task->client->entry->uri = task->sm.uri;
-                        cache_entry_add_pending(task->client->entry, task->client);
-                        cache_enchache(task->sm.uri, task->client->entry);
-
-                        establish_connect_with_server(task->client->sched, task->client->entry);
+                        if (task->client->entry != NULL) {
+                            *task->client->entry = CACHE_ENTRY_INITIALIZER;
+                            // One for client and one for server
+                            task->client->entry->references = 2;
+                            task->client->entry->uri = task->sm.uri;
+                            cache_entry_add_pending(task->client->entry, task->client);
+                        }
+                        else {
+                            free(task->client->health_check_timer);
+                            task->client->health_check_timer = NULL;
+                            http_state_machine_destruct(&task->sm);
+                            client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
+                            return;
+                        }
 
                         // Delete uri from state machine, so it will not deallocate it
                         task->sm.uri.buffer = NULL;
+
+                        if (establish_connect_with_server(task->client->sched, task->client->entry)) {
+                            free(task->client->health_check_timer);
+                            task->client->health_check_timer = NULL;
+                            http_state_machine_destruct(&task->sm);
+                            client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
+                            return;
+                        }
                     }
                     else {
                         fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client->client_ip, task->sm.uri.hostname);
@@ -368,27 +409,38 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                             void *buffer = get_cache_block_buffer(task->client->entry->first_block);
 
                             client_read_cache_task_t *cache_task = malloc(sizeof(client_read_cache_task_t));
-                            *cache_task = (client_read_cache_task_t) {
-                                .task.type = WRITE_REQUEST,
-                                .task.attrs.io = {
-                                    .fd = task->client->fd,
-                                    .as_first = false,
-                                    .buffer = buffer,
-                                    .size = task->client->entry->first_block->size,
-                                    .data = cache_task,
-                                    .callback = read_cache_callback
-                                },
-                                .client = task->client,
-                                .current_block = task->client->entry->first_block
-                            };
-                            aio_scheduler_schedule(task->client->sched, (task_t*) cache_task);
+                            if (cache_task != NULL) {
+                                *cache_task = (client_read_cache_task_t) {
+                                    .task.type = WRITE_REQUEST,
+                                    .task.attrs.io = {
+                                        .fd = task->client->fd,
+                                        .as_first = false,
+                                        .buffer = buffer,
+                                        .size = task->client->entry->first_block->size,
+                                        .data = cache_task,
+                                        .callback = read_cache_callback
+                                    },
+                                    .client = task->client,
+                                    .current_block = task->client->entry->first_block
+                                };
+                                aio_scheduler_schedule(task->client->sched, (task_t*) cache_task);
+                            }
+                            else {
+                                http_state_machine_destruct(&task->sm);
+                                client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
+                                return;
+                            }
                         }
                         // Else - add to pending
                         else {
-                            task->client->state = CLIENT_WAITS_FOR_DATA;
-                            task->client->health_check_timer->client = NULL;
-                            task->client->health_check_timer = NULL;
-                            cache_entry_add_pending(task->client->entry, task->client);
+                            if (client_prepare_for_waiting(task->client)) {
+                                http_state_machine_destruct(&task->sm);
+                                client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
+                                return;
+                            }
+                            else {
+                                cache_entry_add_pending(task->client->entry, task->client);
+                            }
                         }
                     }
                     http_state_machine_destruct(&task->sm);
@@ -412,7 +464,12 @@ void process_request_callback(ssize_t r, int err, void *udata) {
         return;
     }
 
-    http_state_machine_alloc(&task->sm, &task->task.attrs.io.buffer, &task->task.attrs.io.size);
+    if (http_state_machine_alloc(&task->sm, &task->task.attrs.io.buffer, &task->task.attrs.io.size)) {
+        fprintf(stderr, "[Error] Failed allocation of buffer for client request\n");
+        http_state_machine_destruct(&task->sm);
+        client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
+        return;
+    }
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
 }
 
