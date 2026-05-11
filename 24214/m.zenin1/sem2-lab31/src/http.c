@@ -32,10 +32,7 @@ static bool skip_token(http_state_machine_t *sm) {
 }
 
 static bool skip_word(http_state_machine_t *sm) {
-    if (sm->data.arr[sm->analyzed] == '"') {
-        // TODO: Quoted words
-    }
-    else if (!skip_token(sm)) {
+    if (!skip_token(sm)) {
         return false;
     }
 
