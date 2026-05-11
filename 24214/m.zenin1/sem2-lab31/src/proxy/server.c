@@ -235,7 +235,9 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
 
     int server_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (server_fd < 0) {
-        panic();
+        freeaddrinfo(res);
+        early_fail_server_connection(server_val, internal_server_error_response, internal_server_error_response_size);
+        return;
     }
 
     server_val.fd = server_fd;
