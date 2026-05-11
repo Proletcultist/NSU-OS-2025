@@ -40,6 +40,10 @@ static void listening_delegate_callback(int err, void *udata) {
 
 
 static void close_listening_callback(int err, void *udata) {
+    if (err != 0) {
+        return;
+    }
+
     task_t *task = udata;
     int close_err;
     do {
@@ -76,7 +80,7 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     task_t *task = udata;
 
     // If task was canceled
-    if (r < 0 && err == ECANCELED) {
+    if (r < 0) {
         return;
     }
 
@@ -116,18 +120,19 @@ static void accept_connection(ssize_t r, int err, void *udata) {
         client->client_ip[sizeof(client->client_ip - 1)] = '\0';
     }
 
-    task_t *delegate_task = malloc(sizeof(task_t));
+    client_task_t *delegate_task = malloc(sizeof(client_task_t));
     if (delegate_task == NULL) {
         goto accept_connection_defer_2;
     }
 
-    *delegate_task = (task_t) {
-        .type = DELEGATE,
-        .attrs.ctl = {
+    *delegate_task = (client_task_t) {
+        .task.type = DELEGATE,
+        .task.attrs.ctl = {
             .fd = fd,
             .data = delegate_task,
-            .callback = free_callback
-        }
+            .callback = client_delegate_callback
+        },
+        .client = client
     };
 
     process_request_task_t *req_task = malloc(sizeof(process_request_task_t));
@@ -169,7 +174,7 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     };
     client->health_check_timer = timer_task;
 
-    aio_scheduler_schedule(&sched, delegate_task);
+    aio_scheduler_schedule(&sched, (task_t*) delegate_task);
     aio_scheduler_schedule(&sched, (task_t*) req_task);
     aio_scheduler_schedule(&sched, (task_t*) timer_task);
     goto accept_connection_defer_0;

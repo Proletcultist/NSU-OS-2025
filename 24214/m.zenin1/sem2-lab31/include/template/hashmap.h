@@ -40,7 +40,7 @@ typedef struct NAME{
 NAME CONCAT(NAME, _construct)();
 void CONCAT(NAME, _destruct)(NAME self);
 VALUE_TYPE* CONCAT(NAME, _get)(NAME *self, KEY_TYPE key);
-void CONCAT(NAME, _set)(NAME *self, KEY_TYPE key, VALUE_TYPE value);
+int CONCAT(NAME, _set)(NAME *self, KEY_TYPE key, VALUE_TYPE value);
 void CONCAT(NAME, _remove)(NAME *self, KEY_TYPE key);
 #endif
 
@@ -104,11 +104,15 @@ static void CONCAT(NAME, _swap_key)(KEY_TYPE *l, KEY_TYPE *r){
 }
 
 
-void CONCAT(NAME, _extend)(NAME *self){
+int CONCAT(NAME, _extend)(NAME *self){
 	CONCAT(NAME, _node) *old_arr = self->arr;
 	size_t old_size = self->size;
 	self->size = nextPrime(self->size * HM_EXTENSION);
-	self->arr = calloc(self->size, sizeof(CONCAT(NAME, _node)));
+    void *tmp = calloc(self->size, sizeof(CONCAT(NAME, _node)));
+    if (tmp == NULL) {
+        return -1;
+    }
+	self->arr = tmp;
 
 	size_t elems = self->elems;
 	self->elems = 0;
@@ -122,16 +126,24 @@ void CONCAT(NAME, _extend)(NAME *self){
 	}
 
 	free(old_arr);
+
+    return 0;
 }
 
-void CONCAT(NAME, _check_load)(NAME *self){
+int CONCAT(NAME, _check_load)(NAME *self){
 	if (self->size == 0){
-		self->arr = calloc(INITIAL_HM_SIZE, sizeof(CONCAT(NAME, _node)));
+        self->arr = calloc(INITIAL_HM_SIZE, sizeof(CONCAT(NAME, _node)));
+        if (self->arr == NULL) {
+            return -1;
+        }
+
 		self->size = INITIAL_HM_SIZE;
 	}
 	else if (self->elems >= self->size / 100 * MAX_HM_LOAD){
-		CONCAT(NAME, _extend)(self);
+		return CONCAT(NAME, _extend)(self);
 	}
+
+    return 0;
 }
 
 NAME CONCAT(NAME, _construct)(){
@@ -171,8 +183,10 @@ VALUE_TYPE* CONCAT(NAME, _get)(NAME *self, KEY_TYPE key){
 	}
 }
 
-void CONCAT(NAME, _set)(NAME *self, KEY_TYPE key, VALUE_TYPE value){
-	CONCAT(NAME, _check_load)(self);
+int CONCAT(NAME, _set)(NAME *self, KEY_TYPE key, VALUE_TYPE value){
+	if (CONCAT(NAME, _check_load)(self)) {
+        return -1;
+    }
 	self->elems++;
 
 	size_t hash = CONCAT(KEY_TYPE, _hash)(key) % self->size;
@@ -182,7 +196,7 @@ void CONCAT(NAME, _set)(NAME *self, KEY_TYPE key, VALUE_TYPE value){
 		// Empty place
 		if (self->arr[pos].type == EMPTY_NODE){
 			self->arr[pos] = (CONCAT(NAME, _node)){key, value, VALUE_NODE, hash};
-			return;
+			return 0;
 		}
 
 		// Current elem has prob sequence shorter than new elem
@@ -190,7 +204,7 @@ void CONCAT(NAME, _set)(NAME *self, KEY_TYPE key, VALUE_TYPE value){
 			// Is tombstone
 			if (self->arr[pos].type == TOMBSTONE_NODE){
 				self->arr[pos] = (CONCAT(NAME, _node)){key, value, VALUE_NODE, hash};
-				return;
+				return 0;
 			}
 			
 			// Swaping current and new and continue to try find new place for current
@@ -207,11 +221,13 @@ void CONCAT(NAME, _set)(NAME *self, KEY_TYPE key, VALUE_TYPE value){
 		if (self->arr[pos].type != TOMBSTONE_NODE && self->arr[pos].probe_start == hash && CONCAT(KEY_TYPE, _cmp)(self->arr[pos].key, key) == 0){
 			self->arr[pos].value = value;
 			self->elems--;
-			return; 
+			return 0; 
 		}
 
 		probe_dist++;
 	}
+
+    return 0;
 }
 
 
