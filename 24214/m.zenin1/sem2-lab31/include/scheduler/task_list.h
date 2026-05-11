@@ -11,7 +11,7 @@ typedef struct task_list {
     size_t writes_amount;
 } task_list_t;
 
-task_list_t task_list_construct();
+int task_list_construct(task_list_t *tl);
 void task_list_append(task_list_t *tl, task_t *task);
 void task_list_add_first(task_list_t *tl, task_t *task);
 void task_list_delete(task_list_t *tl, task_t *prev, task_t *this);

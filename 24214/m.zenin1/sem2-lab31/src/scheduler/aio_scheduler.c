@@ -8,17 +8,20 @@
 #include <errno.h>
 #include "scheduler/aio_scheduler.h"
 
-aio_scheduler_t aio_scheduler_construct() {
-    aio_scheduler_t ret = {
-                            .fds = (vector_pollfd_t) VECTOR_INITIALIZER,
-                            .task_lists = (vector_task_list_t) VECTOR_INITIALIZER,
-                            .timers = (vector_timer_t) VECTOR_INITIALIZER,
-                            .fdToIndex = (map_int_size_t) HASHMAP_INITIALIZER,
-                            .io_events = 0
-                          };
-    ret.pending_tasks = task_list_construct();
+int aio_scheduler_construct(aio_scheduler_t *sched) {
+    *sched = (aio_scheduler_t) {
+      .fds = (vector_pollfd_t) VECTOR_INITIALIZER,
+      .task_lists = (vector_task_list_t) VECTOR_INITIALIZER,
+      .timers = (vector_timer_t) VECTOR_INITIALIZER,
+      .fdToIndex = (map_int_size_t) HASHMAP_INITIALIZER,
+      .io_events = 0
+    };
 
-    return ret;
+    if (task_list_construct(&sched->pending_tasks)) {
+        return -1;
+    }
+
+    return 0;
 }
 
 static inline void aio_delete_io_task(aio_scheduler_t *sched, struct pollfd *pollfd, task_list_t *tasks, task_t *prev, task_t *this) {
@@ -34,14 +37,39 @@ static inline void aio_delete_io_task(aio_scheduler_t *sched, struct pollfd *pol
 }
 
 static void delegate(aio_scheduler_t *sched, task_t *task) {
-    vector_pollfd_t_push(&sched->fds, (struct pollfd)
-                                      {
-                                        .fd = task->attrs.ctl.fd,
-                                        .events = 0,
-                                        .revents = 0
-                                      });
-    vector_task_list_t_push(&sched->task_lists, task_list_construct());
-    map_int_size_t_set(&sched->fdToIndex, task->attrs.ctl.fd, sched->fds.size - 1);
+    ssize_t res = vector_pollfd_t_push(&sched->fds, (struct pollfd) {
+      .fd = task->attrs.ctl.fd,
+      .events = 0,
+      .revents = 0
+    });
+
+    if (res == -1) {
+        task->attrs.ctl.callback(ENOMEM, task->attrs.ctl.data);
+        return;
+    }
+
+    task_list_t new_tl;
+    if (task_list_construct(&new_tl)) {
+        vector_pollfd_t_pop(&sched->fds);
+        task->attrs.ctl.callback(ENOMEM, task->attrs.ctl.data);
+        return;
+    }
+
+    res = vector_task_list_t_push(&sched->task_lists, new_tl);
+    if (res == -1) {
+        vector_pollfd_t_pop(&sched->fds);
+        task_list_destruct(&new_tl);
+        task->attrs.ctl.callback(ENOMEM, task->attrs.ctl.data);
+        return;
+    }
+
+    if (map_int_size_t_set(&sched->fdToIndex, task->attrs.ctl.fd, sched->fds.size - 1)) {
+        vector_task_list_t_pop(&sched->task_lists);
+        vector_pollfd_t_pop(&sched->fds);
+        task_list_destruct(&new_tl);
+        task->attrs.ctl.callback(ENOMEM, task->attrs.ctl.data);
+        return;
+    }
     
     if (task->attrs.ctl.callback) {
         task->attrs.ctl.callback(0, task->attrs.ctl.data);
@@ -91,7 +119,12 @@ static void undelegate(aio_scheduler_t *sched, task_t *task) {
 }
 
 static void add_timer(aio_scheduler_t *sched, task_t *task) {
-    vector_timer_t_push(&sched->timers, task->attrs.timer);
+    if (vector_timer_t_push(&sched->timers, task->attrs.timer) == -1) {
+        if (task->attrs.timer.callback) {
+            task->attrs.timer.callback(ENOMEM, 0, task->attrs.timer.data);
+            return;
+        }
+    }
     sched->timers.arr[sched->timers.size - 1].time += sched->loop_time;
 
     // Sift up

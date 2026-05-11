@@ -2,6 +2,7 @@
 
 #include "http.h"
 
+void panic();
 void free_callback(int err, void *udata);
 void generate_request(char **buffer, size_t *size, uri_t uri);
 bool ci_memcmp(char *s1, char *s2, size_t n);

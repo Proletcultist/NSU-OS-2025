@@ -2,7 +2,11 @@
 #include <stdlib.h>
 #include "cache/cache.h"
 
-static map_uri_cache_entry_ptr_t cache = (map_uri_cache_entry_ptr_t) HASHMAP_INITIALIZER;
+static map_uri_cache_entry_ptr_t cache;
+
+void cache_init() {
+    cache = (map_uri_cache_entry_ptr_t) HASHMAP_INITIALIZER;
+}
 
 void cache_entry_add_pending(cache_entry_t *entry, proxy_client_t *client) {
     client->next = entry->pending;
@@ -47,9 +51,9 @@ void cache_entry_put(cache_entry_t *entry) {
     free(entry);
 }
 
-void cache_enchache(uri_t uri, cache_entry_t *entry) {
+int cache_enchache(uri_t uri, cache_entry_t *entry) {
     entry->references++;
-    map_uri_cache_entry_ptr_t_set(&cache, uri, entry);
+    return map_uri_cache_entry_ptr_t_set(&cache, uri, entry);
 }
 
 void cache_delete(uri_t uri) {

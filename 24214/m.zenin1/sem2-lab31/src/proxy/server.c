@@ -15,6 +15,16 @@
 
 static void write_next_cache_block(server_task_t *task);
 
+static void server_delegate_callback(int err, void *udata) {
+    task_t *task = udata;
+
+    if (err != 0) {
+        panic();
+    }
+
+    free(task);
+}
+
 static void server_cleanup_callback(int err, void *udata) {
     server_task_t *task = udata;
 
@@ -37,6 +47,10 @@ static bool try_cleanup(proxy_client_t *client) {
     }
 
     client_task_t *task = malloc(sizeof(client_task_t));
+    if (task == NULL) {
+        panic();
+    }
+
     task->client = client;
     client_silent_disconnect(task);
 
@@ -61,6 +75,10 @@ static void send_task_to_client(proxy_server_t *server, client_task_t *task) {
     // If there is no timer for client - create one
     if (task->client->health_check_timer == NULL) {
         client_health_check_timer_t *timer_task = malloc(sizeof(client_health_check_timer_t));
+        if (timer_task == NULL) {
+            panic();
+        }
+
         *timer_task = (client_health_check_timer_t) {
             .task.type = ADD_TIMER,
             .task.attrs.timer = {
@@ -103,6 +121,10 @@ static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_
         }
 
         client_task_t *task = malloc(sizeof(client_task_t));
+        if (task == NULL) {
+            panic();
+        }
+
         *task = (client_task_t) {
             .task.type = WRITE_REQUEST,
             .task.attrs.io = {
@@ -128,6 +150,7 @@ static void early_fail_server_connection(proxy_server_t server, char *msg, size_
     cache_delete(server.cache_entry->uri);
 
     send_cached_to_all_clients(&server, &server.cache_entry->pending, msg, msg_size, true);
+
     cache_entry_put(server.cache_entry);
 }
 
@@ -163,6 +186,9 @@ static void server_health_check_callback(int err, time_t time, void *udata) {
         timer->server->health_check_timer = NULL;
         free(timer);
         return;
+    }
+    else if (err == ENOMEM) {
+        panic();
     }
 
     time_t next_check_time = timer->last_update + SERVER_TIMEOUT;
@@ -208,8 +234,16 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
     }
 
     int server_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (server_fd < 0) {
+        panic();
+    }
+
     server_val.fd = server_fd;
     proxy_server_t *server = malloc(sizeof(proxy_server_t));
+    if (server == NULL) {
+        panic();
+    }
+
     *server = server_val;
 
     struct addrinfo *current_try = res;
@@ -221,6 +255,10 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
         // Connection in progress
         if (err < 0 && errno == EINPROGRESS) {
             connect_task = malloc(sizeof(try_connect_to_server_task_t));
+            if (connect_task == NULL) {
+                panic();
+            }
+
             *connect_task = (try_connect_to_server_task_t) {
                 .task.type = WAIT_FOR_CONNECTION,
                 .task.attrs.io = {
@@ -259,16 +297,24 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
 
     // Schedule delegate server fd
     task_t *delegate_task = malloc(sizeof(task_t));
+    if (delegate_task == NULL) {
+        panic();
+    }
+
     *delegate_task = (task_t) {
         .type = DELEGATE,
         .attrs.ctl = {
             .fd = server_fd,
             .data = delegate_task,
-            .callback = free_callback
+            .callback = server_delegate_callback
         }
     };
 
     server_health_check_timer_t *timer_task = malloc(sizeof(server_health_check_timer_t));
+    if (timer_task == NULL) {
+        panic();
+    }
+
     *timer_task = (server_health_check_timer_t) {
         .task.type = ADD_TIMER,
         .task.attrs.timer = {
@@ -283,6 +329,10 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
 
     // Schedule request writing
     request_writing_task_t *write_req_task = malloc(sizeof(request_writing_task_t));
+    if (write_req_task == NULL) {
+        panic();
+    }
+    
     *write_req_task = (request_writing_task_t) {
         .task.type = WRITE_REQUEST,
         .task.attrs.io = {
@@ -296,9 +346,16 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
     generate_request((char**) &write_req_task->task.attrs.io.buffer,
                      &write_req_task->task.attrs.io.size,
                      server->cache_entry->uri);
+    if (write_req_task->task.attrs.io.buffer == NULL) {
+        panic();
+    }
 
     // Schedule response reading
     response_analysis_task_t *read_res_task = malloc(sizeof(response_analysis_task_t));
+    if (read_res_task == NULL) {
+        panic();
+    }
+
     *read_res_task = (response_analysis_task_t) {
         .task.type = READ_REQUEST,
         .task .attrs.io = {
@@ -310,9 +367,11 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
         .server = server,
         .sm = HTTP_STATE_MACHINE_RES_INITIALIZER
     };
-    http_state_machine_alloc(&read_res_task->sm,
+    if (http_state_machine_alloc(&read_res_task->sm,
                              &read_res_task->task.attrs.io.buffer,
-                             &read_res_task->task.attrs.io.size);
+                             &read_res_task->task.attrs.io.size)) {
+        panic();
+    }
 
     aio_scheduler_schedule(sched, delegate_task);
     if (connect_task != NULL) {
@@ -410,12 +469,14 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
 
     if (w < 0) {
         fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->server->cache_entry->uri.hostname, strerror(err));
+        task->server->cache_entry->last_block->finished = true;
         fail_server_connection((server_task_t*) task, NULL, 0);
         return;
     }
     else if (w == 0) {
         if (task->server->has_content_length) {
             fprintf(stderr, "[Error] Server %s terminated connection\n", task->server->cache_entry->uri.hostname);
+            task->server->cache_entry->last_block->finished = true;
             fail_server_connection((server_task_t*) task, NULL, 0);
         }
         else {
@@ -437,6 +498,10 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
     if (!last && finished) {
         size_t new_cap = task->server->has_content_length ? task->server->content_length : DATA_CHUNK_SIZE;
         following_block = malloc(sizeof(cache_block_in_place_t) + new_cap);
+        if (following_block == NULL) {
+            panic();
+        }
+
         *following_block = (cache_block_in_place_t) {
             .external = false,
             .size = 0,
@@ -561,6 +626,10 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                 }
 
                 cache_block_external_t *head_block = malloc(sizeof(cache_block_external_t));
+                if (head_block == NULL) {
+                    panic();
+                }
+
                 *head_block = (cache_block_external_t) {
                     .external = true,
                     .size = size,
@@ -573,6 +642,10 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                 if (!last && finished) {
                     size_t new_cap = task->server->has_content_length ? task->server->content_length : DATA_CHUNK_SIZE;
                     following_block = malloc(sizeof(cache_block_in_place_t) + new_cap);
+                    if (following_block == NULL) {
+                        panic();
+                    }
+
                     *following_block = (cache_block_in_place_t) {
                         .external = false,
                         .size = 0,
@@ -605,6 +678,9 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
         }
     }
 
-    http_state_machine_alloc(&task->sm, &task->task.attrs.io.buffer, &task->task.attrs.io.size);
+    if (http_state_machine_alloc(&task->sm, &task->task.attrs.io.buffer, &task->task.attrs.io.size)) {
+        panic();
+    }
+
     aio_scheduler_schedule(task->server->sched, (task_t*) task);
 }

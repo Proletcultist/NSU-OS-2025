@@ -1,3 +1,4 @@
+#include <unistd.h>
 #include <stdio.h>
 #include <ctype.h>
 #include <stdlib.h>
@@ -11,6 +12,11 @@
 #include "proxy/util.h"
 #include "proxy/client.h"
 #include "http.h"
+
+void panic() {
+    fprintf(stderr, "Panic\n");
+    exit(-1);
+}
 
 void free_callback(int err, void *udata) {
     free(udata);
@@ -61,7 +67,9 @@ void generate_request(char **buffer, size_t *size, uri_t uri) {
     *size = 71 + hostname_len * 2 + port_len + path_len + 1;
     *buffer = malloc(*size);
 
-    sprintf(*buffer, "GET http://%s:%s%s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\nContent-Lenght: 0\r\n\r\n", uri.hostname, uri.port, uri.path, uri.hostname);
+    if (*buffer != NULL) {
+        sprintf(*buffer, "GET http://%s:%s%s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\nContent-Lenght: 0\r\n\r\n", uri.hostname, uri.port, uri.path, uri.hostname);
+    }
 }
 
 bool ci_memcmp(char *s1, char *s2, size_t n) {

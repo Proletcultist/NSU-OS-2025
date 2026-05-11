@@ -54,7 +54,7 @@ typedef struct aio_scheduler {
     task_list_t pending_tasks;
 } aio_scheduler_t;
 
-aio_scheduler_t aio_scheduler_construct();
+int aio_scheduler_construct(aio_scheduler_t *sched);
 void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task);
 bool aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode);
 void aio_scheduler_destruct(aio_scheduler_t *sched);

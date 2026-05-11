@@ -73,6 +73,7 @@ typedef struct process_request_task {
 
 typedef client_task_t send_to_client_task_t;
 
+void client_delegate_callback(int err, void *udata);
 void client_health_check_callback(int err, time_t time, void *udata);
 void client_silent_disconnect(client_task_t *task);
 void client_respond_error(client_task_t *task, char *msg, size_t msg_size);

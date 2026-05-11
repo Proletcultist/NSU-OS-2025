@@ -8,6 +8,7 @@
 
 #ifdef VECTOR_DECL
 #include <stddef.h>
+#include <sys/types.h>
 
 #ifndef VECTOR_INITIALIZER
     #define VECTOR_INITIALIZER {NULL, 0, 0}
@@ -20,16 +21,18 @@ typedef struct NAME{
 
 NAME CONCAT(NAME, _construct)();
 void CONCAT(NAME, _destruct)(NAME *vec);
-size_t CONCAT(NAME, _push)(NAME *vec, TYPE val);
+ssize_t CONCAT(NAME, _push)(NAME *vec, TYPE val);
 TYPE CONCAT(NAME, _pop)(NAME *vec);
-void CONCAT(NAME, _reserve)(NAME *vec, size_t cap);
+int CONCAT(NAME, _reserve)(NAME *vec, size_t cap);
 void CONCAT(NAME, _resize)(NAME *vec, size_t newCnt, TYPE fill);
 void CONCAT(NAME, _insert)(NAME *vec, size_t where, TYPE *arr, size_t num);
 void CONCAT(NAME, _erase)(NAME *vec, size_t where, size_t num);
 #endif
 
 #ifdef VECTOR_IMPL
+#include <stddef.h>
 #include <stdlib.h>
+#include <sys/types.h>
 #include <memory.h>
 
 NAME CONCAT(NAME, _construct)(){ 
@@ -45,13 +48,20 @@ void CONCAT(NAME, _destruct)(NAME *vec){
 	} 
 } 
 
-size_t CONCAT(NAME, _push)(NAME *vec, TYPE val){ 
+ssize_t CONCAT(NAME, _push)(NAME *vec, TYPE val){ 
 	if (vec->cap == 0){ 
 		vec->arr = malloc(sizeof(TYPE)); 
+        if (vec->arr == NULL) {
+            return -1;
+        }
 		vec->cap = 1; 
 	} 
 	else if (vec->cap == vec->size){ 
-		vec->arr = realloc(vec->arr, vec->cap * 2 * sizeof(TYPE)); 
+        void *tmp = realloc(vec->arr, vec->cap * 2 * sizeof(TYPE));
+        if (tmp == NULL) {
+            return -1;
+        }
+		vec->arr = tmp; 
 		vec->cap *= 2; 
 	} 
 	vec->arr[vec->size] = val; 
@@ -63,12 +73,18 @@ TYPE CONCAT(NAME, _pop)(NAME *vec){
 	return vec->arr[--vec->size]; 
 } 
 
-void CONCAT(NAME, _reserve)(NAME *vec, size_t cap){ 
+int CONCAT(NAME, _reserve)(NAME *vec, size_t cap){ 
 	if (vec->cap < cap){ 
         size_t new_cap = vec->cap * 2 > cap ? vec->cap * 2 : cap;
-        vec->arr = realloc(vec->arr, new_cap * sizeof(TYPE)); 
+        void *tmp = realloc(vec->arr, new_cap * sizeof(TYPE));
+        if (tmp == NULL) {
+            return -1;
+        }
+        vec->arr = tmp; 
         vec->cap = new_cap; 
 	}
+
+    return 0;
 } 
 
 void CONCAT(NAME, _resize)(NAME *vec, size_t newCnt, TYPE fill){ 

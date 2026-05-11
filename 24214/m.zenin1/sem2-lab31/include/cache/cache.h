@@ -21,6 +21,7 @@ typedef struct cache_entry {
     struct proxy_client *pending;
 } cache_entry_t;
 
+void cache_init();
 void cache_entry_put(cache_entry_t *entry);
 void cache_entry_add_pending(cache_entry_t *entry, struct proxy_client *client);
 void cache_entry_occupy_last_block(cache_entry_t *entry, size_t size);
@@ -38,7 +39,7 @@ typedef cache_entry_t *cache_entry_ptr_t;
 #undef HASHMAP_DECL
 #undef NAME
 
-void cache_enchache(uri_t uri, cache_entry_t *entry);
+int cache_enchache(uri_t uri, cache_entry_t *entry);
 void cache_delete(uri_t uri);
 cache_entry_t* cache_get_ref(uri_t uri);
 void cache_destruct();
