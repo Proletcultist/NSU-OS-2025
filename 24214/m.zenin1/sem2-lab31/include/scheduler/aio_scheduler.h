@@ -3,6 +3,7 @@
 #include <poll.h>
 #include "scheduler/task_list.h"
 #include "scheduler/timer.h"
+#include "scheduler/aio_signal.h"
 
 #define NAME vector_pollfd_t 
 #define TYPE struct pollfd
@@ -53,10 +54,13 @@ typedef struct aio_scheduler {
     vector_task_list_t task_lists;
     vector_timer_t timers;
 
-    task_list_t pending_tasks;
+    int signals_pipe;
+    signal_t *signals[2];
+    task_t *pending_tasks[2];
 } aio_scheduler_t;
 
 int aio_scheduler_construct(aio_scheduler_t *sched);
+void aio_signal(aio_scheduler_t *sched, signal_t *signal);
 void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task);
 bool aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode);
 void aio_scheduler_destruct(aio_scheduler_t *sched);

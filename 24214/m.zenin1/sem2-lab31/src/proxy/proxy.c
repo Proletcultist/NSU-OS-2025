@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <signal.h>
 #include "scheduler/aio_scheduler.h"
+#include "scheduler/aio_signal.h"
 #include "http.h"
 #include "proxy/responses.h"
 #include "cache/cache.h"
@@ -19,59 +20,28 @@
 
 static aio_scheduler_t sched;
 static int listening;
-static int skip_poll_pipe[2];
 static bool alive;
 
-static void listening_delegate_callback(int err, void *udata) {
-    task_t *task = udata;
-
-    // If failed to delegate listening socket - undelegate pipe
-    if (err != 0) {
-        *task = (task_t) {
-           .type = UNDELEGATE,
-           .attrs.ctl = {
-               .fd = skip_poll_pipe[0],
-               .callback = NULL
-           }
-        };
-        aio_scheduler_schedule(&sched, task);
-    }
+static task_t undelegate_task;
+static void stop_signal_callback(int err, void *udata) {
+    // Undelegate listening socket
+    undelegate_task = (task_t) {
+       .type = UNDELEGATE,
+       .attrs.ctl = {
+           .fd = listening,
+           .data = &undelegate_task,
+       }
+    };
+    aio_scheduler_schedule(&sched, &undelegate_task);
 }
-
-
-static void close_listening_callback(int err, void *udata) {
-    if (err != 0) {
-        return;
-    }
-
-    task_t *task = udata;
-    int close_err;
-    do {
-        close_err = close(task->attrs.ctl.fd);
-    } while (close_err < 0 && errno == EINTR);
-}
-
-static void skip_pipe_delegate_callback(int err, void *udata) {
-    task_t *task = udata;
-
-    // If failed to delegate pipe - undelegate listening socket
-    if (err != 0) {
-        *task = (task_t) {
-           .type = UNDELEGATE,
-           .attrs.ctl = {
-               .fd = listening,
-               .data = task,
-               .callback = close_listening_callback
-           }
-        };
-        aio_scheduler_schedule(&sched, task);
-    }
-}
+signal_t stop_sig = {
+    .callback = stop_signal_callback,
+    .data = NULL
+};
 
 static void stop_signal_handler(int sig) {
     if (alive) {
-        // Write to skip poll and leave event loop
-        write(skip_poll_pipe[1], "1", 1);
+        aio_signal(&sched, &stop_sig);
         alive = false;
     }
 }
@@ -229,12 +199,6 @@ int start_proxy(struct in_addr ip, in_port_t port) {
         goto start_proxy_defer_1;
     }
 
-    if (pipe(skip_poll_pipe)) {
-        perror("[Error Failed to create pipe\n");
-        ret = -1;
-        goto start_proxy_defer_2;
-    }
-
     alive = true;
 
     struct sigaction act;
@@ -250,17 +214,8 @@ int start_proxy(struct in_addr ip, in_port_t port) {
        .type = DELEGATE,
        .attrs.ctl = {
            .fd = listening,
-           .data = &delegate_task,
-           .callback = listening_delegate_callback
+           .callback = NULL
        }
-    };
-    task_t delegate_skip_pipe_task = {
-        .type = DELEGATE,
-        .attrs.ctl = {
-            .fd = skip_poll_pipe[0],
-            .data = &delegate_skip_pipe_task,
-            .callback = skip_pipe_delegate_callback
-        }
     };
     task_t accept_task = {
        .type = ACCEPT_CONNECTION_REQUESTS,
@@ -271,53 +226,12 @@ int start_proxy(struct in_addr ip, in_port_t port) {
            .callback = accept_connection
        }
     };
-    task_t skip_task = {
-        .type = READ_REQUEST,
-        .attrs.io = {
-            .as_first = false,
-            .fd = skip_poll_pipe[0],
-            .buffer = NULL,
-            .size = 0,
-            .callback = NULL
-        }
-    };
 
     aio_scheduler_schedule(&sched, &delegate_task);
-    aio_scheduler_schedule(&sched, &delegate_skip_pipe_task);
     aio_scheduler_schedule(&sched, &accept_task);
-    aio_scheduler_schedule(&sched, &skip_task);
-
-    while (alive && aio_scheduler_proceed(&sched, RUN_DEFAULT)) { }
-
-    // Undelegate listening socket
-    task_t undelegate_task = {
-       .type = UNDELEGATE,
-       .attrs.ctl = {
-           .fd = listening,
-           .data = &undelegate_task,
-           .callback = close_listening_callback
-       }
-    };
-    // Undelegate skip poll pipe
-    task_t undelegate_task2 = {
-       .type = UNDELEGATE,
-       .attrs.ctl = {
-           .fd = skip_poll_pipe[0],
-           .callback = NULL
-       }
-    };
-    aio_scheduler_schedule(&sched, &undelegate_task);
-    aio_scheduler_schedule(&sched, &undelegate_task2);
 
     while (aio_scheduler_proceed(&sched, RUN_NO_TIMER_WAIT)) {}
 
-    aio_scheduler_destruct(&sched);
-    cache_destruct();
-    close(skip_poll_pipe[0]);
-    close(skip_poll_pipe[1]);
-    return ret;
-
-start_proxy_defer_2:
     aio_scheduler_destruct(&sched);
 start_proxy_defer_1:
     close(listening);

@@ -1,3 +1,4 @@
+#include <fcntl.h>
 #include <math.h>
 #include <time.h>
 #include <stdio.h>
@@ -8,20 +9,53 @@
 #include <errno.h>
 #include "scheduler/aio_scheduler.h"
 
+static char void_buf[32];
+
 int aio_scheduler_construct(aio_scheduler_t *sched) {
     *sched = (aio_scheduler_t) {
       .fds = (vector_pollfd_t) VECTOR_INITIALIZER,
       .task_lists = (vector_task_list_t) VECTOR_INITIALIZER,
       .timers = (vector_timer_t) VECTOR_INITIALIZER,
       .fdToIndex = (map_int_size_t) HASHMAP_INITIALIZER,
+      .pending_tasks = {NULL, NULL},
       .io_events = 0
     };
 
-    if (task_list_construct(&sched->pending_tasks)) {
-        return -1;
-    }
+    int pipes[2];
 
+    if (pipe(pipes)) {
+        goto aio_scheduler_construct_defer_0;
+    }
+    int flags = fcntl(pipes[0], F_GETFL, 0);
+    fcntl(pipes[0], F_SETFL, flags | O_NONBLOCK);
+    flags = fcntl(pipes[1], F_GETFL, 0);
+    fcntl(pipes[1], F_SETFL, flags | O_NONBLOCK);
+
+    sched->signals_pipe = pipes[1];
+
+    struct pollfd sig_pollfd = {
+        .fd = pipes[0],
+        .events = POLLIN,
+        .revents = 0
+    };
+
+    if (vector_pollfd_t_push(&sched->fds, sig_pollfd) == -1) {
+        goto aio_scheduler_construct_defer_1;
+    }
+    if (vector_task_list_t_reserve(&sched->task_lists, 1)) {
+        goto aio_scheduler_construct_defer_2;
+    }
+    sched->task_lists.size = 1;
+ 
     return 0;
+
+aio_scheduler_construct_defer_2:
+    vector_pollfd_t_destruct(&sched->fds);
+aio_scheduler_construct_defer_1:
+    close(pipes[0]);
+    close(pipes[1]);
+aio_scheduler_construct_defer_0:
+    return -1;
 }
 
 static inline void aio_delete_io_task(aio_scheduler_t *sched, struct pollfd *pollfd, task_list_t *tasks, task_t *prev, task_t *this) {
@@ -218,8 +252,13 @@ static bool serve_wait_connection_task(task_t *task, ssize_t *res, int *err) {
 
 
 static void process_pending_tasks(aio_scheduler_t *sched) {
-    for (task_t *task = sched->pending_tasks.first->next; task != NULL; task = sched->pending_tasks.first->next) {
-        task_list_delete(&sched->pending_tasks, sched->pending_tasks.first, task);
+    task_t *task = sched->pending_tasks[0];
+    sched->pending_tasks[0] = NULL;
+    sched->pending_tasks[1] = NULL;
+
+    while (task != NULL) {
+        task_t *next = task->next;
+
         switch (task->type) {
             case DELEGATE:
                 delegate(sched, task);
@@ -234,11 +273,59 @@ static void process_pending_tasks(aio_scheduler_t *sched) {
                 schedule_io(sched, task);
                 break;
         }
+
+        task = next;
+    }
+}
+
+static void aio_check_signals(aio_scheduler_t *sched) {
+
+    int read_err;
+    do {
+        read_err = read(sched->signals_pipe, void_buf, sizeof(void_buf));
+    } while (read_err > 0 || (read_err < 0 && errno == EINTR));
+    signal_t *sig = sched->signals[0];
+    sched->signals[0] = NULL;
+    sched->signals[1] = NULL;
+
+    while (sig != NULL) {
+        signal_t *next = sig->next;
+
+        if (sig->callback) {
+            sig->callback(0, sig->data);
+        }
+
+        sig = next;
     }
 }
 
 void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task) {
-    task_list_append(&sched->pending_tasks, task);
+    task->next = NULL;
+
+    if (sched->pending_tasks[0] == NULL) {
+        sched->pending_tasks[0] = task;
+        sched->pending_tasks[1] = task;
+    }
+    else {
+        sched->pending_tasks[1]->next = task;
+        sched->pending_tasks[1] = task;
+    }
+}
+
+void aio_signal(aio_scheduler_t *sched, signal_t *signal) {
+    write(sched->signals_pipe, "1", 1);
+    if (signal != NULL) {
+        signal->next = NULL;
+
+        if (sched->signals[0] == NULL) {
+            sched->signals[0] = signal;
+            sched->signals[1] = signal;
+        }
+        else {
+            sched->signals[1]->next = signal;
+            sched->signals[1] = signal;
+        }
+    }
 }
 
 static void delete_first_timer(aio_scheduler_t *sched) {
@@ -366,16 +453,19 @@ bool aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode
     if (!check_alive(sched, run_mode)) {
         return false;
     }
+
     int poll_res = poll(sched->fds.arr, sched->fds.size, get_timeout(sched));
     sched->loop_time = time(NULL);
 
     aio_check_timers(sched);
 
     if (poll_res > 0) {
-        for (size_t i = 0; i < sched->fds.size; i++) {
+        for (size_t i = 1; i < sched->fds.size; i++) {
             aio_proceed_io_tasks(sched, &sched->fds.arr[i], &sched->task_lists.arr[i]);
         }
     }
+
+    aio_check_signals(sched);
 
     return true;
 }
@@ -383,7 +473,10 @@ bool aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode
 void aio_scheduler_destruct(aio_scheduler_t *sched) {
     map_int_size_t_destruct(sched->fdToIndex);
 
-    for (size_t i = 0; i < sched->fds.size; i++) {
+    close(sched->signals_pipe);
+    close(sched->fds.arr[0].fd);
+
+    for (size_t i = 1; i < sched->fds.size; i++) {
         // Cancel all io tasks
         task_list_t *task_list = &sched->task_lists.arr[i];
         struct pollfd *pollfd = &sched->fds.arr[i];
@@ -402,7 +495,5 @@ void aio_scheduler_destruct(aio_scheduler_t *sched) {
         }
     }
     vector_timer_t_destruct(&sched->timers);
-
-    task_list_destruct(&sched->pending_tasks);
 }
 
