@@ -8,6 +8,21 @@ void cache_init() {
     cache = (map_uri_cache_entry_ptr_t) HASHMAP_INITIALIZER;
 }
 
+cache_entry_t* cache_encache_or_get_ref(uri_t uri, cache_entry_t *entry) {
+    cache_entry_t **ptr = map_uri_cache_entry_ptr_t_get(&cache, uri);
+    if (ptr == NULL) {
+        if (map_uri_cache_entry_ptr_t_set(&cache, uri, entry)) {
+            return NULL;
+        }
+        entry->references++;
+        return entry;
+    }
+    else {
+        (*ptr)->references++;
+        return *ptr;
+    }
+}
+
 void cache_entry_add_pending(cache_entry_t *entry, proxy_client_t *client) {
     client->next = entry->pending;
     entry->pending = client;
@@ -51,27 +66,11 @@ void cache_entry_put(cache_entry_t *entry) {
     free(entry);
 }
 
-int cache_enchache(uri_t uri, cache_entry_t *entry) {
-    entry->references++;
-    return map_uri_cache_entry_ptr_t_set(&cache, uri, entry);
-}
-
 void cache_delete(uri_t uri) {
     cache_entry_t **ptr = map_uri_cache_entry_ptr_t_get(&cache, uri);
     if (ptr != NULL) {
         cache_entry_put(*ptr);
         map_uri_cache_entry_ptr_t_remove(&cache, uri);
-    }
-}
-
-cache_entry_t* cache_get_ref(uri_t uri) {
-    cache_entry_t **ptr = map_uri_cache_entry_ptr_t_get(&cache, uri);
-    if (ptr == NULL) {
-        return NULL;
-    }
-    else {
-        (*ptr)->references++;
-        return *ptr;
     }
 }
 

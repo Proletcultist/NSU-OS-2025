@@ -336,8 +336,23 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                     client_respond_error((client_task_t*) task, task->msg, task->msg_size);
                 }
                 else {
-                    task->client->entry = cache_get_ref(task->sm.uri);
+                    cache_entry_t *new_entry = malloc(sizeof(cache_entry_t));
+                    if (new_entry == NULL) {
+                        panic();
+                    }
+                    *new_entry = CACHE_ENTRY_INITIALIZER;
+                    new_entry->references = 1;
+                    new_entry->uri = task->sm.uri;
+                    // Delete uri from state machine, so it will not deallocate it
+                    task->sm.uri.buffer = NULL;
+                    cache_entry_add_pending(new_entry, task->client);
+
+                    task->client->entry = cache_encache_or_get_ref(task->sm.uri, new_entry);
                     if (task->client->entry == NULL) {
+                        panic();
+                    }
+
+                    if (task->client->entry == new_entry) {
                         fprintf(stderr, "[Info] %s Cache miss for %s\n", task->client->client_ip, task->sm.uri.hostname);
 
                         // Start waiting for data from server and forget about timer - it will be cleaned up
@@ -345,27 +360,13 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                         task->client->health_check_timer->client = NULL;
                         task->client->health_check_timer = NULL;
 
-                        task->client->entry = malloc(sizeof(cache_entry_t));
-                        if (task->client->entry == NULL) {
-                            panic();
-                        }
-
-                        *task->client->entry = CACHE_ENTRY_INITIALIZER;
-                        // One for client and one for server
-                        task->client->entry->references = 2;
-                        task->client->entry->uri = task->sm.uri;
-                        cache_entry_add_pending(task->client->entry, task->client);
-                        if (cache_enchache(task->sm.uri, task->client->entry)) {
-                            panic();
-                        }
-
+                        new_entry->references++;
                         establish_connect_with_server(task->client->sched, task->client->entry);
-
-                        // Delete uri from state machine, so it will not deallocate it
-                        task->sm.uri.buffer = NULL;
                     }
                     else {
-                        fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client->client_ip, task->sm.uri.hostname);
+                        cache_entry_put(new_entry);
+                        
+                        fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client->client_ip, task->client->entry->uri.hostname);
 
                         task->client->state = CLIENT_READING_CACHED;
 
