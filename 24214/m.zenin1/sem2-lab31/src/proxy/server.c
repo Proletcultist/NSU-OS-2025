@@ -203,6 +203,7 @@ static void server_health_check_callback(int err, time_t time, void *udata) {
 }
 
 void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry) {
+    entry->references++;
     proxy_server_t server_val = {
         .state = SERVER_CONNECTION_IN_PROGRESS,
         .sched = sched,

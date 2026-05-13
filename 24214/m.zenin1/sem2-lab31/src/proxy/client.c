@@ -75,7 +75,7 @@ void client_silent_disconnect(client_task_t *task) {
 }
 
 void client_delegate_callback(int err, void *udata) {
-    task_t *task = udata;
+    client_task_t *task = udata;
 
     // If delegate fails - cleanup
     if (err != 0) {
@@ -268,7 +268,9 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                 return;
             case READ_REQUEST_LINE:
                 if (task->sm.uri.buffer == NULL) {
-                    panic();
+                    http_state_machine_destruct(&task->sm);
+                    client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
+                    return;
                 }
 
                 fprintf(stderr, "[Info] %s Parsed hostname: \"%s\" port: \"%s\", path: \"%s\"\n", task->client->client_ip, task->sm.uri.hostname, task->sm.uri.port, task->sm.uri.path);
@@ -322,8 +324,11 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                 else {
                     cache_entry_t *new_entry = malloc(sizeof(cache_entry_t));
                     if (new_entry == NULL) {
-                        panic();
+                        http_state_machine_destruct(&task->sm);
+                        client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
+                        return;
                     }
+
                     *new_entry = CACHE_ENTRY_INITIALIZER;
                     new_entry->references = 1;
                     new_entry->uri = task->sm.uri;
@@ -331,20 +336,26 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                     task->sm.uri.buffer = NULL;
                     cache_entry_add_pending(new_entry, task->client);
 
-                    task->client->entry = cache_encache_or_get_ref(task->sm.uri, new_entry);
-                    if (task->client->entry == NULL) {
-                        panic();
-                    }
+                    http_state_machine_destruct(&task->sm);
 
-                    if (task->client->entry == new_entry) {
+                    task->client->entry = cache_encache_or_get_ref(task->sm.uri, new_entry);
+
+                    if (task->client->entry == NULL) {
+                        // There is no such cache entry, and adding one had failed
+                        cache_entry_put(new_entry);
+
+                        client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
+                    }
+                    else if (task->client->entry == new_entry) {
                         fprintf(stderr, "[Info] %s Cache miss for %s\n", task->client->client_ip, task->sm.uri.hostname);
 
                         task->client->state = CLIENT_WAITS_FOR_DATA;
                         // Disable client cleanuping - only server connect can add tasks to client from now on
                         task->client->health_check_timer->cleanup_client = false;
 
-                        new_entry->references++;
                         establish_connect_with_server(task->client->sched, task->client->entry);
+
+                        free(task);
                     }
                     else {
                         cache_entry_put(new_entry);
@@ -359,7 +370,8 @@ void process_request_callback(ssize_t r, int err, void *udata) {
 
                             client_read_cache_task_t *cache_task = malloc(sizeof(client_read_cache_task_t));
                             if (cache_task == NULL) {
-                                panic();
+                                client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
+                                return;
                             }
 
                             *cache_task = (client_read_cache_task_t) {
@@ -384,9 +396,9 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                             task->client->health_check_timer->cleanup_client = false;
                             cache_entry_add_pending(task->client->entry, task->client);
                         }
+
+                        free(task);
                     }
-                    http_state_machine_destruct(&task->sm);
-                    free(task);
                 }
                 return;
             case READ_STATUS_LINE:
@@ -407,7 +419,9 @@ void process_request_callback(ssize_t r, int err, void *udata) {
     }
 
     if (http_state_machine_alloc(&task->sm, &task->task.attrs.io.buffer, &task->task.attrs.io.size)) {
-        panic();
+        http_state_machine_destruct(&task->sm);
+        client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
+        return;
     }
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
 }
