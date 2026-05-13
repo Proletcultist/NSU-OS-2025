@@ -164,8 +164,8 @@ static void read_cache_callback(ssize_t r, int err, void *udata) {
     else {
         // No data available - add to pending
         task->client->state = CLIENT_WAITS_FOR_DATA;
-        task->client->health_check_timer->client = NULL;
-        task->client->health_check_timer = NULL;
+        // Disable client cleanuping - only server connect can add tasks to client from now on
+        task->client->health_check_timer->cleanup_client = false;
         cache_entry_add_pending(task->client->entry, task->client);
         free(task);
     }
@@ -185,8 +185,11 @@ void client_health_check_callback(int err, time_t time, void *udata) {
         free(timer);
         return;
     }
-    else if (err == ENOMEM) {
-        panic();
+    // If client is waiting for data from server - just restart teh timer
+    else if (timer->client->state == CLIENT_WAITS_FOR_DATA) {
+        timer->task.attrs.timer.time = CLIENT_TIMEOUT;
+        aio_scheduler_schedule(timer->client->sched, (task_t*) timer);
+        return;
     }
 
 
@@ -324,10 +327,9 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                     if (task->client->entry == new_entry) {
                         fprintf(stderr, "[Info] %s Cache miss for %s\n", task->client->client_ip, task->sm.uri.hostname);
 
-                        // Start waiting for data from server and forget about timer - it will be cleaned up
                         task->client->state = CLIENT_WAITS_FOR_DATA;
-                        task->client->health_check_timer->client = NULL;
-                        task->client->health_check_timer = NULL;
+                        // Disable client cleanuping - only server connect can add tasks to client from now on
+                        task->client->health_check_timer->cleanup_client = false;
 
                         new_entry->references++;
                         establish_connect_with_server(task->client->sched, task->client->entry);
@@ -337,10 +339,10 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                         
                         fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client->client_ip, task->client->entry->uri.hostname);
 
-                        task->client->state = CLIENT_READING_CACHED;
-
                         // If there is data in first block - read it
                         if (task->client->entry->first_block != NULL && task->client->entry->first_block->size > 0) {
+                            task->client->state = CLIENT_READING_CACHED;
+
                             void *buffer = get_cache_block_buffer(task->client->entry->first_block);
 
                             client_read_cache_task_t *cache_task = malloc(sizeof(client_read_cache_task_t));
@@ -366,8 +368,8 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                         // Else - add to pending
                         else {
                             task->client->state = CLIENT_WAITS_FOR_DATA;
-                            task->client->health_check_timer->client = NULL;
-                            task->client->health_check_timer = NULL;
+                            // Disable client cleanuping - only server connect can add tasks to client from now on
+                            task->client->health_check_timer->cleanup_client = false;
                             cache_entry_add_pending(task->client->entry, task->client);
                         }
                     }

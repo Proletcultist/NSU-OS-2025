@@ -70,33 +70,13 @@ static void cleanup_disconnected_beg(proxy_client_t **clients) {
 }
 
 static void send_task_to_client(proxy_server_t *server, client_task_t *task) {
-    task->task.next = NULL;
-
-    // If there is no timer for client - create one
-    if (task->client->health_check_timer == NULL) {
-        client_health_check_timer_t *timer_task = malloc(sizeof(client_health_check_timer_t));
-        if (timer_task == NULL) {
-            panic();
-        }
-
-        *timer_task = (client_health_check_timer_t) {
-            .task.type = ADD_TIMER,
-            .task.attrs.timer = {
-                .time = CLIENT_TIMEOUT,
-                .callback = client_health_check_callback,
-                .data = timer_task
-            },
-            .task.next = NULL,
-            .client = task->client,
-            .cleanup_client = false,
-            .last_update = server->sched->loop_time,
-        };
-        task->client->health_check_timer = timer_task;
-
-        task->task.next = (task_t*) timer_task;
+    // If client is newbie - change his state and updata timer
+    if (task->client->state == CLIENT_WAITS_FOR_DATA) {
+        task->client->state = CLIENT_RECEIVING_SERVER_DATA;
+        task->client->health_check_timer->last_update = server->sched->loop_time;
     }
 
-    aio_scheduler_schedule_all(task->client->sched, (task_t*) task);
+    aio_scheduler_schedule(task->client->sched, (task_t*) task);
 }
 
 // Go through linked list of clients, cleanup disconnected, send data to connected

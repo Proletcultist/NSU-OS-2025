@@ -15,11 +15,12 @@
 struct cache_entry;
 
 typedef enum proxy_client_state {
-    CLIENT_SENDING_REQUEST,     // Receiving clients' request, if failed or timed out - start disconnection
-    CLIENT_READING_CACHED,      // Reading data from cache, if failed or timed out - start disconnection
-    CLIENT_WAITS_FOR_DATA,      // Waiting for data from server, if timerd out - send error and disconnect
-    CLIENT_DISCONNECTING,       // Don't start disconnection again, but check for timeouts
-    CLIENT_DISCONNECTED         // Don't do anything
+    CLIENT_SENDING_REQUEST,         // Receiving clients' request, if failed or timed out - start disconnection
+    CLIENT_READING_CACHED,          // Reading data from cache, if failed or timed out - start disconnection
+    CLIENT_WAITS_FOR_DATA,          // Waiting for data from server, if timed out - do nothing and wait
+    CLIENT_RECEIVING_SERVER_DATA,   // Receiving data from server - if timed out - change state to disconnected
+    CLIENT_DISCONNECTING,           // Don't start disconnection again, but check for timeouts
+    CLIENT_DISCONNECTED             // Don't do anything
 } proxy_client_state_t;
 
 struct client_health_check_timer;
