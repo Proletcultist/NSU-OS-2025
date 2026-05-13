@@ -5,10 +5,7 @@
 #include "cache/cache.h"
 #include "cache/cache_block.h"
 
-#define CLIENT_SEND_REQUEST_TIMEOUT     5
-#define CLIENT_READ_CACHED_TIMEOUT      5
-#define CLIENT_WAIT_FOR_DATA_TIMEOUT    7
-#define CLIENT_DISCONNECTION_TIMEOUT    3
+#define CLIENT_TIMEOUT     5
 
 #define MAX_HEADERS_SIZE (64 * 1024)    // 64KB
 #define MAX_LINE_SIZE (8 * 1024)    // 8KB

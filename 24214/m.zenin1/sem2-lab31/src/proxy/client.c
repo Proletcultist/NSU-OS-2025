@@ -190,8 +190,9 @@ void client_health_check_callback(int err, time_t time, void *udata) {
     }
 
 
+    time_t next_check_time = timer->last_update + CLIENT_TIMEOUT;
     // If time ellapsed - disconnect client
-    if (time - timer->last_update >= timer->task.attrs.timer.time) {
+    if (time - timer->last_update >= timer->task.attrs.timer.time || next_check_time < time) {
         timer->client->health_check_timer = NULL;
         if (timer->cleanup_client) {
             client_silent_disconnect((client_task_t*) timer);
@@ -204,41 +205,8 @@ void client_health_check_callback(int err, time_t time, void *udata) {
     }
     // Schedule next timer
     else {
-        time_t next_check_time = 0;
-        switch (timer->client->state) {
-            case CLIENT_SENDING_REQUEST:
-                next_check_time = timer->last_update + CLIENT_SEND_REQUEST_TIMEOUT;
-                break;
-            case CLIENT_READING_CACHED:
-                next_check_time = timer->last_update + CLIENT_READ_CACHED_TIMEOUT;
-                break;
-            case CLIENT_WAITS_FOR_DATA:
-                next_check_time = timer->last_update + CLIENT_WAIT_FOR_DATA_TIMEOUT;
-                break;
-            case CLIENT_DISCONNECTING:
-                next_check_time = timer->last_update + CLIENT_DISCONNECTION_TIMEOUT;
-                break;
-            case CLIENT_DISCONNECTED:
-                // Unreachable
-                timer->client->health_check_timer = NULL;
-                free(timer);
-                return;
-        }
-
-        if (next_check_time < time) {
-            timer->client->health_check_timer = NULL;
-            if (timer->cleanup_client) {
-                client_silent_disconnect((client_task_t*) timer);
-            }
-            else {
-                timer->client->state = CLIENT_DISCONNECTED;
-                free(timer);
-            }
-        }
-        else {
-            timer->task.attrs.timer.time = next_check_time - time;
-            aio_scheduler_schedule(timer->client->sched, (task_t*) timer);
-        }
+        timer->task.attrs.timer.time = next_check_time - time;
+        aio_scheduler_schedule(timer->client->sched, (task_t*) timer);
     }
 }
 

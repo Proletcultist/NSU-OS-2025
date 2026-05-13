@@ -136,7 +136,7 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     *timer_task = (client_health_check_timer_t) {
         .task.type = ADD_TIMER,
         .task.attrs.timer = {
-            .time = CLIENT_SEND_REQUEST_TIMEOUT,
+            .time = CLIENT_TIMEOUT,
             .callback = client_health_check_callback,
             .data = timer_task
         },

@@ -82,7 +82,7 @@ static void send_task_to_client(proxy_server_t *server, client_task_t *task) {
         *timer_task = (client_health_check_timer_t) {
             .task.type = ADD_TIMER,
             .task.attrs.timer = {
-                .time = CLIENT_WAIT_FOR_DATA_TIMEOUT,
+                .time = CLIENT_TIMEOUT,
                 .callback = client_health_check_callback,
                 .data = timer_task
             },
