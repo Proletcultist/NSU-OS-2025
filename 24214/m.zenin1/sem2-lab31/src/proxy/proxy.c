@@ -146,9 +146,10 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     };
     client->health_check_timer = timer_task;
 
-    aio_scheduler_schedule(&sched, (task_t*) delegate_task);
-    aio_scheduler_schedule(&sched, (task_t*) req_task);
-    aio_scheduler_schedule(&sched, (task_t*) timer_task);
+    delegate_task->task.next = (task_t*) req_task;
+    req_task->task.next = (task_t*) timer_task;
+    timer_task->task.next = NULL;
+    aio_scheduler_schedule_all(&sched, (task_t*) delegate_task);
     goto accept_connection_defer_0;
 
 accept_connection_defer_4:

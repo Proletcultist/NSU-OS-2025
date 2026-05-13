@@ -299,17 +299,26 @@ static void aio_check_signals(aio_scheduler_t *sched) {
     }
 }
 
-void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task) {
-    task->next = NULL;
+void aio_scheduler_schedule_all(aio_scheduler_t *sched, task_t *task) {
 
     if (sched->pending_tasks[0] == NULL) {
         sched->pending_tasks[0] = task;
-        sched->pending_tasks[1] = task;
     }
     else {
         sched->pending_tasks[1]->next = task;
-        sched->pending_tasks[1] = task;
     }
+
+    while (task->next != NULL) {
+        task = task->next;
+    }
+
+    sched->pending_tasks[1] = task;
+}
+
+void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task) {
+    task->next = NULL;
+
+    aio_scheduler_schedule_all(sched, task);
 }
 
 void aio_signal(aio_scheduler_t *sched, signal_t *signal) {

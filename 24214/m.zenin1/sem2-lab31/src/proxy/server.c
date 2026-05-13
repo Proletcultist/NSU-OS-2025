@@ -70,7 +70,7 @@ static void cleanup_disconnected_beg(proxy_client_t **clients) {
 }
 
 static void send_task_to_client(proxy_server_t *server, client_task_t *task) {
-    aio_scheduler_schedule(task->client->sched, (task_t*) task);
+    task->task.next = NULL;
 
     // If there is no timer for client - create one
     if (task->client->health_check_timer == NULL) {
@@ -86,13 +86,17 @@ static void send_task_to_client(proxy_server_t *server, client_task_t *task) {
                 .callback = client_health_check_callback,
                 .data = timer_task
             },
+            .task.next = NULL,
             .client = task->client,
             .cleanup_client = false,
-            .last_update = server->sched->loop_time
+            .last_update = server->sched->loop_time,
         };
         task->client->health_check_timer = timer_task;
-        aio_scheduler_schedule(task->client->sched, (task_t*) timer_task);
+
+        task->task.next = (task_t*) timer_task;
     }
+
+    aio_scheduler_schedule_all(task->client->sched, (task_t*) task);
 }
 
 // Go through linked list of clients, cleanup disconnected, send data to connected
@@ -206,6 +210,7 @@ static void server_health_check_callback(int err, time_t time, void *udata) {
         }
         else {
             // Unreachable
+            timer->server->health_check_timer = NULL;
             free(timer);
             return;
         }
@@ -375,13 +380,26 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
         panic();
     }
 
-    aio_scheduler_schedule(sched, delegate_task);
+    task_t *new_tasks = (task_t*) delegate_task;
+    task_t *new_tasks_cursor = new_tasks;
+
     if (connect_task != NULL) {
-        aio_scheduler_schedule(sched, (task_t*) connect_task);
+        new_tasks_cursor->next = (task_t*) connect_task;
+        new_tasks_cursor = (task_t*) connect_task;
     }
-    aio_scheduler_schedule(sched, (task_t*) write_req_task);
-    aio_scheduler_schedule(sched, (task_t*) read_res_task);
-    aio_scheduler_schedule(sched, (task_t*) timer_task);
+
+    new_tasks_cursor->next = (task_t*) write_req_task;
+    new_tasks_cursor = (task_t*) write_req_task;
+
+    new_tasks_cursor->next = (task_t*) read_res_task;
+    new_tasks_cursor = (task_t*) read_res_task;
+
+    new_tasks_cursor->next = (task_t*) timer_task;
+    new_tasks_cursor = (task_t*) timer_task;
+
+    new_tasks_cursor->next = NULL;
+
+    aio_scheduler_schedule_all(sched, new_tasks);
 }
 
 void try_connect_callback(ssize_t r, int err, void *udata) {

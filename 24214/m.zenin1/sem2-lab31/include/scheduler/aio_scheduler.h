@@ -61,6 +61,7 @@ typedef struct aio_scheduler {
 
 int aio_scheduler_construct(aio_scheduler_t *sched);
 void aio_signal(aio_scheduler_t *sched, signal_t *signal);
+void aio_scheduler_schedule_all(aio_scheduler_t *sched, task_t *task);
 void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task);
 bool aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode);
 void aio_scheduler_destruct(aio_scheduler_t *sched);

@@ -220,6 +220,7 @@ void client_health_check_callback(int err, time_t time, void *udata) {
                 break;
             case CLIENT_DISCONNECTED:
                 // Unreachable
+                timer->client->health_check_timer = NULL;
                 free(timer);
                 return;
         }
