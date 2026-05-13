@@ -15,16 +15,6 @@
 
 static void write_next_cache_block(server_task_t *task);
 
-static void server_delegate_callback(int err, void *udata) {
-    task_t *task = udata;
-
-    if (err != 0) {
-        panic();
-    }
-
-    free(task);
-}
-
 static void server_cleanup_callback(int err, void *udata) {
     server_task_t *task = udata;
 
@@ -38,6 +28,17 @@ static void server_cleanup_callback(int err, void *udata) {
     }
     cache_entry_put(task->server->cache_entry);
     free(task->server);
+    free(task);
+}
+
+static void server_delegate_callback(int err, void *udata) {
+    task_t *task = udata;
+
+    if (err != 0) {
+        // TODO: Disconnect all clients + delete entry
+        panic();
+    }
+
     free(task);
 }
 
@@ -166,13 +167,13 @@ static void server_health_check_callback(int err, time_t time, void *udata) {
         free(timer);
         return;
     }
-    else if (timer->server->state == SERVER_DISCONNECTED || err == ECANCELED) {
+    else if (err == ENOMEM) {
+        panic();
+    }
+    else if (err == ECANCELED || err == EINVAL || timer->server->state == SERVER_DISCONNECTED) {
         timer->server->health_check_timer = NULL;
         free(timer);
         return;
-    }
-    else if (err == ENOMEM) {
-        panic();
     }
 
     time_t next_check_time = timer->last_update + SERVER_TIMEOUT;
@@ -384,7 +385,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
 
 void try_connect_callback(ssize_t r, int err, void *udata) {
     try_connect_to_server_task_t *task = udata;
-    if (task->server->state != SERVER_CONNECTION_IN_PROGRESS || (r < 0 && err == ECANCELED)) {
+    if ((r < 0 && (err == ECANCELED || err == EINVAL)) || task->server->state != SERVER_CONNECTION_IN_PROGRESS) {
         freeaddrinfo(task->first);
         free(task);
         return;
@@ -432,8 +433,9 @@ void write_request_callback(ssize_t w, int err, void *udata) {
     request_writing_task_t *task = udata;
     free(task->task.attrs.io.buffer);
     
-    if ((task->server->state != SERVER_RECEIVING_HEADERS &&
-        task->server->state != SERVER_RECEIVING_BODY) || (w < 0 && err == ECANCELED)) {
+    if ((w < 0 && (err == ECANCELED || EINVAL)) || 
+        (task->server->state != SERVER_RECEIVING_HEADERS &&
+        task->server->state != SERVER_RECEIVING_BODY)) {
         free(task);
         return;
     }
@@ -462,7 +464,7 @@ void write_request_callback(ssize_t w, int err, void *udata) {
 static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
     server_task_t *task = udata;
 
-    if (task->server->state != SERVER_RECEIVING_BODY || (w < 0 && err == ECANCELED)) {
+    if ((w < 0 && (err == ECANCELED || err == EINVAL)) || task->server->state != SERVER_RECEIVING_BODY) {
         free(task);
         return;
     }
@@ -547,7 +549,7 @@ static void write_next_cache_block(server_task_t *task) {
 void analyze_response_callback(ssize_t r, int err, void *udata) {
     response_analysis_task_t *task = udata;
 
-    if (task->server->state != SERVER_RECEIVING_HEADERS || (r < 0 && err == ECANCELED)) {
+    if ((r < 0 && (err == ECANCELED || err == EINVAL)) || task->server->state != SERVER_RECEIVING_HEADERS) {
         http_state_machine_destruct(&task->sm);
         free(task);
         return;

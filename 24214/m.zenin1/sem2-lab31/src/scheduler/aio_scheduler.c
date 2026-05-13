@@ -78,14 +78,18 @@ static void delegate(aio_scheduler_t *sched, task_t *task) {
     });
 
     if (res == -1) {
-        task->attrs.ctl.callback(ENOMEM, task->attrs.ctl.data);
+        if (task->attrs.ctl.callback) {
+            task->attrs.ctl.callback(ENOMEM, task->attrs.ctl.data);
+        }
         return;
     }
 
     task_list_t new_tl;
     if (task_list_construct(&new_tl)) {
         vector_pollfd_t_pop(&sched->fds);
-        task->attrs.ctl.callback(ENOMEM, task->attrs.ctl.data);
+        if (task->attrs.ctl.callback) {
+            task->attrs.ctl.callback(ENOMEM, task->attrs.ctl.data);
+        }
         return;
     }
 
@@ -93,7 +97,9 @@ static void delegate(aio_scheduler_t *sched, task_t *task) {
     if (res == -1) {
         vector_pollfd_t_pop(&sched->fds);
         task_list_destruct(&new_tl);
-        task->attrs.ctl.callback(ENOMEM, task->attrs.ctl.data);
+        if (task->attrs.ctl.callback) {
+            task->attrs.ctl.callback(ENOMEM, task->attrs.ctl.data);
+        }
         return;
     }
 
@@ -101,7 +107,9 @@ static void delegate(aio_scheduler_t *sched, task_t *task) {
         vector_task_list_t_pop(&sched->task_lists);
         vector_pollfd_t_pop(&sched->fds);
         task_list_destruct(&new_tl);
-        task->attrs.ctl.callback(ENOMEM, task->attrs.ctl.data);
+        if (task->attrs.ctl.callback) {
+            task->attrs.ctl.callback(ENOMEM, task->attrs.ctl.data);
+        }
         return;
     }
     

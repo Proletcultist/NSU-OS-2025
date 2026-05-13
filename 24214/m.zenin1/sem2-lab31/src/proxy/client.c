@@ -34,7 +34,7 @@ static void client_cleanup_callback(int err, void *udata) {
 
 void client_respond_error_callback(ssize_t r, int err, void *udata) {
     client_task_t *task = udata;
-    if (task->client->state == CLIENT_DISCONNECTED || (r < 0 && (err == ECANCELED || err == EINVAL))) {
+    if ((r < 0 && (err == ECANCELED || err == EINVAL)) || task->client->state == CLIENT_DISCONNECTED) {
         free(task);
         return;
     }
@@ -77,11 +77,13 @@ void client_silent_disconnect(client_task_t *task) {
 void client_delegate_callback(int err, void *udata) {
     task_t *task = udata;
 
+    // If delegate fails - cleanup
     if (err != 0) {
-        panic();
+        client_cleanup_callback(0, task);
     }
-
-    free(task);
+    else {
+        free(task);
+    }
 }
 
 void client_respond_error(client_task_t *task, char *msg, size_t msg_size) {
@@ -105,7 +107,7 @@ void client_respond_error(client_task_t *task, char *msg, size_t msg_size) {
 void client_write_cached_last_callback(ssize_t r, int err, void *udata) {
     client_task_t *task = udata;
 
-    if (task->client->state == CLIENT_DISCONNECTED || (r < 0 && (err == ECANCELED || err == EINVAL))) {
+    if ((r < 0 && (err == ECANCELED || err == EINVAL)) || task->client->state == CLIENT_DISCONNECTED) {
         free(task);
         return;
     }
@@ -126,7 +128,7 @@ void client_write_cached_callback(ssize_t r, int err, void *udata) {
 static void read_cache_callback(ssize_t r, int err, void *udata) {
     client_read_cache_task_t *task = udata;
 
-    if (task->client->state != CLIENT_READING_CACHED || (r < 0 && (err == ECANCELED || err == EINVAL))) {
+    if ((r < 0 && (err == ECANCELED || err == EINVAL)) || task->client->state != CLIENT_READING_CACHED) {
         free(task);
         return;
     }
@@ -180,7 +182,17 @@ void client_health_check_callback(int err, time_t time, void *udata) {
         free(timer);
         return;
     }
-    else if (timer->client->state == CLIENT_DISCONNECTED || err == ECANCELED || err == EINVAL) {
+    else if (err == ENOMEM) {
+        timer->client->health_check_timer = NULL;
+        if (timer->client->state != CLIENT_DISCONNECTED) {
+            client_silent_disconnect((client_task_t*) timer);
+        }
+        else {
+            free(timer);
+        }
+        return;
+    }
+    else if (err == ECANCELED || err == EINVAL || timer->client->state == CLIENT_DISCONNECTED) {
         timer->client->health_check_timer = NULL;
         free(timer);
         return;
@@ -216,7 +228,7 @@ void client_health_check_callback(int err, time_t time, void *udata) {
 void process_request_callback(ssize_t r, int err, void *udata) {
     process_request_task_t *task = udata;
 
-    if (task->client->state != CLIENT_SENDING_REQUEST || (r < 0 && (err == ECANCELED || err == EINVAL))) {
+    if ((r < 0 && (err == ECANCELED || err == EINVAL)) || task->client->state != CLIENT_SENDING_REQUEST) {
         http_state_machine_destruct(&task->sm);
         free(task);
         return;
