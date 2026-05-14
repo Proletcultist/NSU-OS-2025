@@ -65,7 +65,7 @@ typedef struct aio_scheduler {
 // Not MT-Safe, not Async Signal safe
 int aio_scheduler_construct(aio_scheduler_t *sched);
 void aio_add_signal_handler(aio_scheduler_t *sched, signal_handler_t *handler);
-bool aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode);
+int aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode);
 void aio_scheduler_destruct(aio_scheduler_t *sched);
 void aio_scheduler_schedule_all(aio_scheduler_t *sched, task_t *task);
 void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task);

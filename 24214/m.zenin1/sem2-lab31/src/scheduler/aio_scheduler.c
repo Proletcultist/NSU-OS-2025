@@ -413,6 +413,23 @@ static void aio_proceed_io_tasks(aio_scheduler_t *sched, struct pollfd *pollfd, 
     task_t *prev = tasks->first;
 
     for (task_t *cursor = prev->next; cursor != NULL;) {
+        if (pollfd->revents & POLLERR) {
+            aio_delete_io_task(sched, pollfd, tasks, prev, cursor);
+            if (cursor->attrs.io.callback) {
+                cursor->attrs.io.callback(-1, EPIPE, cursor->attrs.io.data);
+            }
+            cursor = prev->next;
+            continue;
+        }
+        else if (pollfd->revents & POLLHUP) {
+            aio_delete_io_task(sched, pollfd, tasks, prev, cursor);
+            if (cursor->attrs.io.callback) {
+                cursor->attrs.io.callback(0, 0, cursor->attrs.io.data);
+            }
+            cursor = prev->next;
+            continue;
+        }
+
         ssize_t res = 0;
         int err = 0;
         bool complete = false;
@@ -485,22 +502,30 @@ static bool check_alive(aio_scheduler_t *sched, scheduler_run_mode_t run_mode) {
     return true;
 }
 
-bool aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode) {
+int aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode) {
     sched->loop_time = time(NULL);
     process_pending_tasks(sched);
 
     if (!check_alive(sched, run_mode)) {
-        return false;
+        return 0;
     }
 
     int poll_res = poll(sched->fds.arr, sched->fds.size, get_timeout(sched));
+    if (poll_res < 0) {
+        return poll_res;
+    }
     sched->loop_time = time(NULL);
 
     aio_check_timers(sched);
 
     if (poll_res > 0) {
         for (size_t i = 1; i < sched->fds.size; i++) {
-            aio_proceed_io_tasks(sched, &sched->fds.arr[i], &sched->task_lists.arr[i]);
+            if (sched->fds.arr[i].revents & POLLNVAL) {
+                return -1;
+            }
+            else if (sched->fds.arr[i].revents) {
+                aio_proceed_io_tasks(sched, &sched->fds.arr[i], &sched->task_lists.arr[i]);
+            }
         }
     }
 
@@ -508,7 +533,7 @@ bool aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode
         aio_check_signals(sched);
     }
 
-    return true;
+    return 1;
 }
 
 void aio_scheduler_destruct(aio_scheduler_t *sched) {

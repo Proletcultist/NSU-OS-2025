@@ -236,7 +236,10 @@ int start_proxy(struct in_addr ip, in_port_t port) {
     aio_scheduler_schedule(&sched, &delegate_task);
     aio_scheduler_schedule(&sched, &accept_task);
 
-    while (aio_scheduler_proceed(&sched, RUN_NO_TIMER_WAIT)) {}
+    ret = 1;
+    while (ret > 0) {
+        ret = aio_scheduler_proceed(&sched, RUN_NO_TIMER_WAIT);
+    }
 
     aio_scheduler_destruct(&sched);
 start_proxy_defer_1:
