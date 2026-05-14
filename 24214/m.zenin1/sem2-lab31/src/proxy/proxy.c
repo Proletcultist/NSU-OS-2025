@@ -18,6 +18,8 @@
 #include "proxy/client.h"
 #include "proxy/util.h"
 
+#define SIGGRACEFULSHUT 0
+
 static aio_scheduler_t sched;
 static int listening;
 static bool alive;
@@ -34,14 +36,10 @@ static void stop_signal_callback(int err, void *udata) {
     };
     aio_scheduler_schedule(&sched, &undelegate_task);
 }
-signal_t stop_sig = {
-    .callback = stop_signal_callback,
-    .data = NULL
-};
 
 static void stop_signal_handler(int sig) {
     if (alive) {
-        aio_signal(&sched, &stop_sig);
+        aio_signal(&sched, SIGGRACEFULSHUT);
         alive = false;
     }
 }
@@ -199,6 +197,13 @@ int start_proxy(struct in_addr ip, in_port_t port) {
         ret = -1;
         goto start_proxy_defer_1;
     }
+
+    signal_handler_t stop_signal = {
+        .signum = SIGGRACEFULSHUT,
+        .callback = stop_signal_callback,
+        .data = NULL
+    };
+    aio_add_signal_handler(&sched, &stop_signal);
 
     alive = true;
 

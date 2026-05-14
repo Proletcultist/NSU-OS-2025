@@ -13,12 +13,14 @@ static char void_buf[32];
 
 int aio_scheduler_construct(aio_scheduler_t *sched) {
     *sched = (aio_scheduler_t) {
+      .fdToIndex = (map_int_size_t) HASHMAP_INITIALIZER,
+      .io_events = 0,
       .fds = (vector_pollfd_t) VECTOR_INITIALIZER,
       .task_lists = (vector_task_list_t) VECTOR_INITIALIZER,
       .timers = (vector_timer_t) VECTOR_INITIALIZER,
-      .fdToIndex = (map_int_size_t) HASHMAP_INITIALIZER,
-      .pending_tasks = {NULL, NULL},
-      .io_events = 0
+      .pending_signals = 0,
+      .signal_handlers = {NULL, NULL}, 
+      .pending_tasks = {NULL, NULL}
     };
 
     int pipes[2];
@@ -277,33 +279,15 @@ static void process_pending_tasks(aio_scheduler_t *sched) {
             case ADD_TIMER:
                 add_timer(sched, task);
                 break;
-            default:
+            case ACCEPT_CONNECTION_REQUESTS:
+            case WAIT_FOR_CONNECTION:
+            case READ_REQUEST:
+            case WRITE_REQUEST:
                 schedule_io(sched, task);
                 break;
         }
 
         task = next;
-    }
-}
-
-static void aio_check_signals(aio_scheduler_t *sched) {
-
-    int read_err;
-    do {
-        read_err = read(sched->signals_pipe, void_buf, sizeof(void_buf));
-    } while (read_err > 0 || (read_err < 0 && errno == EINTR));
-    signal_t *sig = sched->signals[0];
-    sched->signals[0] = NULL;
-    sched->signals[1] = NULL;
-
-    while (sig != NULL) {
-        signal_t *next = sig->next;
-
-        if (sig->callback) {
-            sig->callback(0, sig->data);
-        }
-
-        sig = next;
     }
 }
 
@@ -329,20 +313,58 @@ void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task) {
     aio_scheduler_schedule_all(sched, task);
 }
 
-void aio_signal(aio_scheduler_t *sched, signal_t *signal) {
-    write(sched->signals_pipe, "1", 1);
-    if (signal != NULL) {
-        signal->next = NULL;
+void aio_add_signal_handler(aio_scheduler_t *sched, signal_handler_t *handler) {
+    handler->next = NULL;
 
-        if (sched->signals[0] == NULL) {
-            sched->signals[0] = signal;
-            sched->signals[1] = signal;
+    if (sched->signal_handlers[0] == NULL) {
+        sched->signal_handlers[0] = handler;
+    }
+    else {
+        sched->signal_handlers[1]->next = handler;
+    }
+
+    sched->signal_handlers[1] = handler;
+}
+
+static void aio_check_signals(aio_scheduler_t *sched) {
+    int read_err;
+    do {
+        read_err = read(sched->signals_pipe, void_buf, sizeof(void_buf));
+    } while (read_err > 0 || (read_err < 0 && errno == EINTR));
+
+    signal_handler_t *handler = sched->signal_handlers[0];
+    sched->pending_tasks[0] = NULL;
+    sched->pending_tasks[1] = NULL;
+
+    while (handler != NULL) {
+        signal_handler_t *next = handler->next;
+
+        if (((1u << handler->signum) & sched->pending_signals) && handler->callback) {
+            handler->callback(0, handler->data);
         }
         else {
-            sched->signals[1]->next = signal;
-            sched->signals[1] = signal;
+            aio_add_signal_handler(sched, handler);           
         }
+
+        handler = next;
     }
+
+    sched->pending_signals = 0;
+}
+
+int aio_signal(aio_scheduler_t *sched, uint8_t signum) {
+    if (signum >= sizeof(sched->pending_signals)) {
+        return -1;
+    }
+
+    int write_err;
+    do {
+        write_err = write(sched->signals_pipe, "1", 1);
+    } while (write_err < 0 && errno == EINTR);
+
+    sched->pending_signals |= (1u << signum);
+
+    return 0;
 }
 
 static void delete_first_timer(aio_scheduler_t *sched) {
@@ -482,7 +504,9 @@ bool aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode
         }
     }
 
-    aio_check_signals(sched);
+    if (sched->pending_signals) {
+        aio_check_signals(sched);
+    }
 
     return true;
 }
@@ -493,8 +517,8 @@ void aio_scheduler_destruct(aio_scheduler_t *sched) {
     close(sched->signals_pipe);
     close(sched->fds.arr[0].fd);
 
+    // Cancel all io tasks
     for (size_t i = 1; i < sched->fds.size; i++) {
-        // Cancel all io tasks
         task_list_t *task_list = &sched->task_lists.arr[i];
         struct pollfd *pollfd = &sched->fds.arr[i];
         for (task_t *cursor = task_list->first->next; cursor != NULL; cursor = task_list->first->next) {
@@ -504,6 +528,46 @@ void aio_scheduler_destruct(aio_scheduler_t *sched) {
     }
     vector_task_list_t_destruct(&sched->task_lists);
     vector_pollfd_t_destruct(&sched->fds);
+
+    // Cancel all pending tasks
+    for (task_t *task = sched->pending_tasks[0]; task != NULL;) {
+        task_t *next = task->next;
+
+        switch (task->type) {
+            case DELEGATE:
+            case UNDELEGATE:
+                if (task->attrs.ctl.callback) {
+                    task->attrs.ctl.callback(ECANCELED, task->attrs.ctl.data);
+                }
+                break;
+            case ADD_TIMER:
+                if (task->attrs.timer.callback) {
+                    task->attrs.timer.callback(ECANCELED, sched->loop_time, task->attrs.ctl.data);
+                }
+                break;
+            case ACCEPT_CONNECTION_REQUESTS:
+            case WAIT_FOR_CONNECTION:
+            case READ_REQUEST:
+            case WRITE_REQUEST:
+                if (task->attrs.io.callback) {
+                    task->attrs.io.callback(-1, ECANCELED, task->attrs.ctl.data);
+                }
+                break;
+        }
+
+        task = next;
+    }
+
+    // Cancel all signal handlers
+    for (signal_handler_t *handler = sched->signal_handlers[0]; handler != NULL;) {
+        signal_handler_t *next = handler->next;
+
+        if (handler->callback) {
+            handler->callback(ECANCELED, handler->data);
+        }
+
+        handler = next;
+    }
 
     // Cancel all timers
     for (size_t i = 0; i < sched->timers.size; i++) {

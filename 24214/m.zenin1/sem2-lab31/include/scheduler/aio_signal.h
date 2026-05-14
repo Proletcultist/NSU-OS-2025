@@ -1,9 +1,12 @@
 #pragma once
 
-typedef struct signal {
+#include <stdint.h>
+
+typedef struct signal_handler {
+    uint8_t signum;
     void (*callback)(int, void*);
     void *data;
 
-    struct signal *next;
-} signal_t;
+    struct signal_handler *next;
+} signal_handler_t;
 
