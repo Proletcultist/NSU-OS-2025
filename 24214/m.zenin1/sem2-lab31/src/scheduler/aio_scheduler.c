@@ -14,7 +14,6 @@ static char void_buf[32];
 int aio_scheduler_construct(aio_scheduler_t *sched) {
     *sched = (aio_scheduler_t) {
       .fdToIndex = (map_int_size_t) HASHMAP_INITIALIZER,
-      .io_events = 0,
       .fds = (vector_pollfd_t) VECTOR_INITIALIZER,
       .task_lists = (vector_task_list_t) VECTOR_INITIALIZER,
       .timers = (vector_timer_t) VECTOR_INITIALIZER,
@@ -62,7 +61,6 @@ aio_scheduler_construct_defer_0:
 
 static inline void aio_delete_io_task(aio_scheduler_t *sched, struct pollfd *pollfd, task_list_t *tasks, task_t *prev, task_t *this) {
     task_list_delete(tasks, prev, this);
-    sched->io_events--;
 
     if (tasks->reads_amount == 0) {
         pollfd->events &= ~POLLIN;
@@ -190,7 +188,6 @@ static void schedule_io(aio_scheduler_t *sched, task_t *task) {
         return;
     }
 
-    sched->io_events++;
     task->attrs.io.written = 0;
 
     struct pollfd *fd = &sched->fds.arr[*index];
@@ -305,6 +302,11 @@ void aio_scheduler_schedule_all(aio_scheduler_t *sched, task_t *task) {
     }
 
     sched->pending_tasks[1] = task;
+
+    int write_err;
+    do {
+        write_err = write(sched->signals_pipe, "1", 1);
+    } while (write_err < 0 && errno == EINTR);
 }
 
 void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task) {
@@ -326,12 +328,7 @@ void aio_add_signal_handler(aio_scheduler_t *sched, signal_handler_t *handler) {
     sched->signal_handlers[1] = handler;
 }
 
-static void aio_check_signals(aio_scheduler_t *sched) {
-    int read_err;
-    do {
-        read_err = read(sched->signals_pipe, void_buf, sizeof(void_buf));
-    } while (read_err > 0 || (read_err < 0 && errno == EINTR));
-
+static void check_signals(aio_scheduler_t *sched) {
     signal_handler_t *handler = sched->signal_handlers[0];
     sched->pending_tasks[0] = NULL;
     sched->pending_tasks[1] = NULL;
@@ -352,17 +349,24 @@ static void aio_check_signals(aio_scheduler_t *sched) {
     sched->pending_signals = 0;
 }
 
+static void clear_signals_pipe(aio_scheduler_t *sched) {
+    int read_err;
+    do {
+        read_err = read(sched->fds.arr[0].fd, void_buf, sizeof(void_buf));
+    } while (read_err > 0 || (read_err < 0 && errno == EINTR));
+}
+
 int aio_signal(aio_scheduler_t *sched, uint8_t signum) {
     if (signum >= sizeof(sched->pending_signals)) {
         return -1;
     }
 
+    sched->pending_signals |= (1u << signum);
+
     int write_err;
     do {
         write_err = write(sched->signals_pipe, "1", 1);
     } while (write_err < 0 && errno == EINTR);
-
-    sched->pending_signals |= (1u << signum);
 
     return 0;
 }
@@ -397,7 +401,7 @@ static void delete_first_timer(aio_scheduler_t *sched) {
     }
 }
 
-static void aio_check_timers(aio_scheduler_t *sched) {
+static void check_timers(aio_scheduler_t *sched) {
     while (sched->timers.size > 0 && sched->loop_time >= sched->timers.arr[0].time) {
         if (sched->timers.arr[0].callback) {
             sched->timers.arr[0].callback(0, sched->loop_time, sched->timers.arr[0].data);
@@ -492,48 +496,55 @@ static int get_timeout(aio_scheduler_t *sched) {
 }
 
 static bool check_alive(aio_scheduler_t *sched, scheduler_run_mode_t run_mode) {
-    if (sched->io_events == 0 && run_mode == RUN_NO_TIMER_WAIT) {
+    if (sched->pending_tasks[0] != NULL) {
+        return true;
+    }
+    else if (sched->fds.size == 1 && run_mode == RUN_FOR_IO) {
         return false;
     }
-    else if (sched->io_events == 0 && sched->timers.size == 0 && run_mode == RUN_DEFAULT) {
-        return false;
+    else {
+        return true;
     }
-
-    return true;
 }
 
 int aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode) {
-    sched->loop_time = time(NULL);
-    process_pending_tasks(sched);
 
-    if (!check_alive(sched, run_mode)) {
-        return 0;
-    }
+    while (check_alive(sched, run_mode)) {
+        sched->loop_time = time(NULL);
+        int poll_res;
+        do {
+            poll_res = poll(sched->fds.arr, sched->fds.size, get_timeout(sched));
+        } while (poll_res < 0 && errno == EINTR);
+        if (poll_res < 0) {
+            return poll_res;
+        }
+        sched->loop_time = time(NULL);
 
-    int poll_res = poll(sched->fds.arr, sched->fds.size, get_timeout(sched));
-    if (poll_res < 0) {
-        return poll_res;
-    }
-    sched->loop_time = time(NULL);
+        check_timers(sched);
 
-    aio_check_timers(sched);
-
-    if (poll_res > 0) {
-        for (size_t i = 1; i < sched->fds.size; i++) {
-            if (sched->fds.arr[i].revents & POLLNVAL) {
-                return -1;
+        // If there is revents on fds besides the signals pipe - process i/o
+        if (poll_res > (sched->fds.arr[0].revents ? 1 : 0)) {
+            for (size_t i = 1; i < sched->fds.size; i++) {
+                if (sched->fds.arr[i].revents & POLLNVAL) {
+                    return -1;
+                }
+                else if (sched->fds.arr[i].revents) {
+                    aio_proceed_io_tasks(sched, &sched->fds.arr[i], &sched->task_lists.arr[i]);
+                }
             }
-            else if (sched->fds.arr[i].revents) {
-                aio_proceed_io_tasks(sched, &sched->fds.arr[i], &sched->task_lists.arr[i]);
-            }
+        }
+
+        clear_signals_pipe(sched);
+
+        process_pending_tasks(sched);
+
+        if (sched->pending_signals) {
+            check_signals(sched);
+            return 1;
         }
     }
 
-    if (sched->pending_signals) {
-        aio_check_signals(sched);
-    }
-
-    return 1;
+    return 0;
 }
 
 void aio_scheduler_destruct(aio_scheduler_t *sched) {

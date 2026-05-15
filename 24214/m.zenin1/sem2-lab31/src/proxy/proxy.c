@@ -26,6 +26,11 @@ static bool alive;
 
 static task_t undelegate_task;
 static void stop_signal_callback(int err, void *udata) {
+    scheduler_run_mode_t *run_mode = udata;
+
+    // Stop event loop when there is no i/o
+    *run_mode = RUN_FOR_IO;
+
     // Undelegate listening socket
     undelegate_task = (task_t) {
        .type = UNDELEGATE,
@@ -198,10 +203,12 @@ int start_proxy(struct in_addr ip, in_port_t port) {
         goto start_proxy_defer_1;
     }
 
+    scheduler_run_mode_t run_mode = RUN_DEFAULT;
+
     signal_handler_t stop_signal = {
         .signum = SIGGRACEFULSHUT,
         .callback = stop_signal_callback,
-        .data = NULL
+        .data = &run_mode
     };
     aio_add_signal_handler(&sched, &stop_signal);
 
@@ -236,10 +243,10 @@ int start_proxy(struct in_addr ip, in_port_t port) {
     aio_scheduler_schedule(&sched, &delegate_task);
     aio_scheduler_schedule(&sched, &accept_task);
 
-    ret = 1;
-    while (ret > 0) {
-        ret = aio_scheduler_proceed(&sched, RUN_NO_TIMER_WAIT);
-    }
+    // Run till loop dies or error occures
+    do {
+        ret = aio_scheduler_proceed(&sched, run_mode);
+    } while (ret > 0);
 
     aio_scheduler_destruct(&sched);
 start_proxy_defer_1:
