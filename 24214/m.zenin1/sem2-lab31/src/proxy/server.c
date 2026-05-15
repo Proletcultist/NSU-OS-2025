@@ -15,6 +15,19 @@
 
 static void write_next_cache_block(server_task_t *task);
 
+// Call only when cache_entry deleted from cache!!!
+static void wakeup_all_clients(proxy_server_t *server) {
+    for (proxy_client_t *cursor = server->cache_entry->pending; cursor != NULL;) {
+        proxy_client_t *next = cursor->next;
+
+        cursor->health_check_timer->cleanup_client = true;
+        cursor->health_check_timer->last_update = server->sched->loop_time;
+        cursor->state = CLIENT_RECEIVING_SERVER_DATA;
+
+        cursor = next;
+    }
+}
+
 static void server_cleanup_callback(int err, void *udata) {
     server_task_t *task = udata;
 
@@ -32,14 +45,16 @@ static void server_cleanup_callback(int err, void *udata) {
 }
 
 static void server_delegate_callback(int err, void *udata) {
-    task_t *task = udata;
+    server_task_t *task = udata;
 
     if (err != 0) {
-        // TODO: Disconnect all clients + delete entry
-        panic();
+        cache_delete(task->server->cache_entry->uri);
+        wakeup_all_clients(task->server);
+        server_cleanup_callback(0, task);
     }
-
-    free(task);
+    else {
+        free(task);
+    }
 }
 
 static bool try_cleanup(proxy_client_t *client) {
@@ -73,8 +88,8 @@ static void cleanup_disconnected_beg(proxy_client_t **clients) {
 static void send_task_to_client(proxy_server_t *server, client_task_t *task) {
     // If client is newbie - change his state and updata timer
     if (task->client->state == CLIENT_WAITS_FOR_DATA) {
-        task->client->state = CLIENT_RECEIVING_SERVER_DATA;
         task->client->health_check_timer->last_update = server->sched->loop_time;
+        task->client->state = CLIENT_RECEIVING_SERVER_DATA;
     }
 
     aio_scheduler_schedule(task->client->sched, (task_t*) task);
@@ -99,6 +114,7 @@ static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_
     proxy_client_t *cursor = *clients;
     while (cursor != NULL) {
         proxy_client_t *next = cursor->next;
+
         if (try_cleanup(cursor)) {
             prev->next = next;
             cursor = next;
@@ -124,8 +140,9 @@ static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_
         };
         send_task_to_client(server, task);
 
+        // If last is set, prev may be already freed, but when last is set we don't really care
         prev = cursor;
-        cursor = cursor->next;
+        cursor = next;
     }
 
     return prev;
@@ -285,18 +302,19 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
     }
 
     // Schedule delegate server fd
-    task_t *delegate_task = malloc(sizeof(task_t));
+    server_task_t *delegate_task = malloc(sizeof(server_task_t));
     if (delegate_task == NULL) {
         panic();
     }
 
-    *delegate_task = (task_t) {
-        .type = DELEGATE,
-        .attrs.ctl = {
+    *delegate_task = (server_task_t) {
+        .task.type = DELEGATE,
+        .task.attrs.ctl = {
             .fd = server_fd,
             .data = delegate_task,
             .callback = server_delegate_callback
-        }
+        },
+        .server = server
     };
 
     server_health_check_timer_t *timer_task = malloc(sizeof(server_health_check_timer_t));
@@ -487,6 +505,7 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
 
             task->server->cache_entry->last_block->finished = true;
             send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, NULL, 0, true);
+
             close_server_connection((server_task_t*) task);
         }
         return;
