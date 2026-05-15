@@ -647,19 +647,6 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                     cache_delete(task->server->cache_entry->uri);
                 }
 
-                cache_block_external_t *head_block = malloc(sizeof(cache_block_external_t));
-                if (head_block == NULL) {
-                    panic();
-                }
-
-                *head_block = (cache_block_external_t) {
-                    .external = true,
-                    .size = size,
-                    .cap = cap,
-                    .finished = finished,
-                    .data = buffer
-                };
-
                 cache_block_in_place_t *following_block = NULL;
                 if (!last && finished) {
                     size_t new_cap = task->server->has_content_length ? task->server->content_length : DATA_CHUNK_SIZE;
@@ -676,7 +663,13 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                     };
                 }
 
-                cache_entry_add_block(task->server->cache_entry, (cache_block_t*) head_block);
+                *((cache_block_external_t*) task->server->cache_entry->first_block) = (cache_block_external_t) {
+                    .external = true,
+                    .size = size,
+                    .cap = cap,
+                    .finished = finished,
+                    .data = buffer
+                };
                 if (following_block != NULL) {
                     cache_entry_add_block(task->server->cache_entry, (cache_block_t*) following_block);
                 }

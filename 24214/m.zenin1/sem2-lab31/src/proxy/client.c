@@ -323,17 +323,29 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                 }
                 else {
                     cache_entry_t *new_entry = malloc(sizeof(cache_entry_t));
-                    if (new_entry == NULL) {
+                    cache_block_external_t *head_block = malloc(sizeof(cache_block_external_t));
+                    if (head_block == NULL || new_entry == NULL) {
+                        free(head_block);
+                        free(new_entry);
                         http_state_machine_destruct(&task->sm);
                         client_respond_error((client_task_t*) task, internal_server_error_response, internal_server_error_response_size);
                         return;
                     }
+
+                    *head_block = (cache_block_external_t) {
+                        .external = true,
+                        .size = 0,
+                        .cap = 0,
+                        .finished = false,
+                        .data = NULL
+                    };
 
                     *new_entry = CACHE_ENTRY_INITIALIZER;
                     new_entry->references = 1;
                     new_entry->uri = task->sm.uri;
                     // Delete uri from state machine, so it will not deallocate it
                     task->sm.uri.buffer = NULL;
+                    cache_entry_add_block(new_entry, (cache_block_t*) head_block);
                     cache_entry_add_pending(new_entry, task->client);
 
                     http_state_machine_destruct(&task->sm);
@@ -362,8 +374,8 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                         
                         fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client->client_ip, task->client->entry->uri.hostname);
 
-                        // If there is data in first block - read it
                         if (task->client->entry->first_block != NULL && task->client->entry->first_block->size > 0) {
+                            // If there is data in first block - read it
                             task->client->state = CLIENT_READING_CACHED;
 
                             void *buffer = get_cache_block_buffer(task->client->entry->first_block);
@@ -388,16 +400,21 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                                 .current_block = task->client->entry->first_block
                             };
                             aio_scheduler_schedule(task->client->sched, (task_t*) cache_task);
+                            free(task);
                         }
-                        // Else - add to pending
+                        else if (task->client->entry->first_block != NULL &&
+                                 task->client->entry->first_block->finished) {
+                            // Block is finished and empty - close connection
+                            client_silent_disconnect((client_task_t*) task);   
+                        }
                         else {
+                            // No data available - add to pending
                             task->client->state = CLIENT_WAITS_FOR_DATA;
                             // Disable client cleanuping - only server connect can add tasks to client from now on
                             task->client->health_check_timer->cleanup_client = false;
                             cache_entry_add_pending(task->client->entry, task->client);
+                            free(task);
                         }
-
-                        free(task);
                     }
                 }
                 return;
