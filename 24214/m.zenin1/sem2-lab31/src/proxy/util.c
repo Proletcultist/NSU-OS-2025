@@ -13,8 +13,8 @@
 #include "proxy/client.h"
 #include "http.h"
 
-void panic() {
-    fprintf(stderr, "Panic\n");
+void panic(char *msg) {
+    fprintf(stderr, "[Panic!!!1] %s\n", msg);
     exit(-1);
 }
 

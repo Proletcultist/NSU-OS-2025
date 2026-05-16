@@ -15,20 +15,6 @@
 
 static void write_next_cache_block(server_task_t *task);
 
-// Call only when cache_entry deleted from cache!!!
-static void wakeup_all_clients(proxy_server_t *server) {
-    for (proxy_client_t *cursor = server->cache_entry->pending; cursor != NULL;) {
-        proxy_client_t *next = cursor->next;
-
-        // TODO: Check state
-        cursor->health_check_timer->cleanup_client = true;
-        cursor->health_check_timer->last_update = server->sched->loop_time;
-        cursor->state = CLIENT_RECEIVING_SERVER_DATA;
-
-        cursor = next;
-    }
-}
-
 static void server_cleanup_callback(int err, void *udata) {
     server_task_t *task = udata;
 
@@ -49,18 +35,7 @@ static void server_delegate_callback(int err, void *udata) {
     server_task_t *task = udata;
 
     if (err != 0) {
-        cache_delete(task->server->cache_entry->uri);
-        *((cache_block_external_t*) task->server->cache_entry->first_block) = (cache_block_external_t) {
-            .type = STATIC_EXTERNAL_CACHE_BLOCK,
-            .next = NULL,
-            .size = internal_server_error_response_size,
-            .cap = internal_server_error_response_size,
-            .finished = true,
-            .data = internal_server_error_response
-        };
-        wakeup_all_clients(task->server);
-
-        server_cleanup_callback(0, task);
+        panic("Out of memory");
     }
     else {
         free(task);
@@ -74,7 +49,7 @@ static bool try_cleanup(proxy_client_t *client) {
 
     client_task_t *task = malloc(sizeof(client_task_t));
     if (task == NULL) {
-        panic();
+        panic("Out of memory");
     }
 
     task->client = client;
@@ -133,7 +108,7 @@ static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_
 
         client_task_t *task = malloc(sizeof(client_task_t));
         if (task == NULL) {
-            panic();
+            panic("Out of memory");
         }
 
         *task = (client_task_t) {
@@ -224,7 +199,7 @@ static void server_health_check_callback(int err, time_t time, void *udata) {
         return;
     }
     else if (err == ENOMEM) {
-        panic();
+        panic("Out of memory");
     }
     else if (err == ECANCELED || err == EINVAL || timer->server->state == SERVER_DISCONNECTED) {
         timer->server->health_check_timer = NULL;
@@ -285,7 +260,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
     server_val.fd = server_fd;
     proxy_server_t *server = malloc(sizeof(proxy_server_t));
     if (server == NULL) {
-        panic();
+        panic("Out of memory");
     }
 
     *server = server_val;
@@ -300,7 +275,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
         if (err < 0 && errno == EINPROGRESS) {
             connect_task = malloc(sizeof(try_connect_to_server_task_t));
             if (connect_task == NULL) {
-                panic();
+                panic("Out of memory");
             }
 
             *connect_task = (try_connect_to_server_task_t) {
@@ -342,7 +317,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
     // Schedule delegate server fd
     server_task_t *delegate_task = malloc(sizeof(server_task_t));
     if (delegate_task == NULL) {
-        panic();
+        panic("Out of memory");
     }
 
     *delegate_task = (server_task_t) {
@@ -357,7 +332,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
 
     server_health_check_timer_t *timer_task = malloc(sizeof(server_health_check_timer_t));
     if (timer_task == NULL) {
-        panic();
+        panic("Out of memory");
     }
 
     *timer_task = (server_health_check_timer_t) {
@@ -375,7 +350,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
     // Schedule request writing
     request_writing_task_t *write_req_task = malloc(sizeof(request_writing_task_t));
     if (write_req_task == NULL) {
-        panic();
+        panic("Out of memory");
     }
     
     *write_req_task = (request_writing_task_t) {
@@ -392,13 +367,13 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
                      &write_req_task->task.attrs.io.size,
                      server->cache_entry->uri);
     if (write_req_task->task.attrs.io.buffer == NULL) {
-        panic();
+        panic("Out of memory");
     }
 
     // Schedule response reading
     response_analysis_task_t *read_res_task = malloc(sizeof(response_analysis_task_t));
     if (read_res_task == NULL) {
-        panic();
+        panic("Out of memory");
     }
 
     *read_res_task = (response_analysis_task_t) {
@@ -415,7 +390,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
     if (http_state_machine_alloc(&read_res_task->sm,
                              &read_res_task->task.attrs.io.buffer,
                              &read_res_task->task.attrs.io.size)) {
-        panic();
+        panic("Out of memory");
     }
 
     task_t *new_tasks = (task_t*) delegate_task;
@@ -559,7 +534,7 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
         size_t new_cap = task->server->has_content_length ? task->server->content_length : DATA_CHUNK_SIZE;
         following_block = malloc(sizeof(cache_block_in_place_t) + new_cap);
         if (following_block == NULL) {
-            panic();
+            panic("Out of memory");
         }
 
         *following_block = (cache_block_in_place_t) {
@@ -692,7 +667,7 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                     size_t new_cap = task->server->has_content_length ? task->server->content_length : DATA_CHUNK_SIZE;
                     following_block = malloc(sizeof(cache_block_in_place_t) + new_cap);
                     if (following_block == NULL) {
-                        panic();
+                        panic("Out of memory");
                     }
 
                     *following_block = (cache_block_in_place_t) {
@@ -734,7 +709,7 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
     }
 
     if (http_state_machine_alloc(&task->sm, &task->task.attrs.io.buffer, &task->task.attrs.io.size)) {
-        panic();
+        panic("Out of memory");
     }
 
     aio_scheduler_schedule(task->server->sched, (task_t*) task);
