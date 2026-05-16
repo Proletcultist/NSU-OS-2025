@@ -20,6 +20,7 @@ static void wakeup_all_clients(proxy_server_t *server) {
     for (proxy_client_t *cursor = server->cache_entry->pending; cursor != NULL;) {
         proxy_client_t *next = cursor->next;
 
+        // TODO: Check state
         cursor->health_check_timer->cleanup_client = true;
         cursor->health_check_timer->last_update = server->sched->loop_time;
         cursor->state = CLIENT_RECEIVING_SERVER_DATA;
@@ -248,7 +249,6 @@ static void server_health_check_callback(int err, time_t time, void *udata) {
             // Unreachable
             timer->server->health_check_timer = NULL;
             free(timer);
-            return;
         }
     }
     else {

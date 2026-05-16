@@ -109,12 +109,10 @@ void client_respond_error(client_task_t *task, char *msg, size_t msg_size) {
 void client_write_cached_last_callback(ssize_t r, int err, void *udata) {
     client_task_t *task = udata;
 
-    if ((r < 0 && (err == ECANCELED || err == EINVAL)) || task->client->state == CLIENT_DISCONNECTED) {
+    if (r < 0 && (err == ECANCELED || err == EINVAL)) {
         free(task);
         return;
     }
-
-    task->client->health_check_timer->last_update = task->client->sched->loop_time;
 
     client_silent_disconnect(task);
 }
