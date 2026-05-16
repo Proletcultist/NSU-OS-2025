@@ -47,6 +47,8 @@ void client_respond_error_callback(ssize_t r, int err, void *udata) {
         fprintf(stderr, "[Error] Client terminated connection\n");
     }
 
+    task->client->health_check_timer->last_update = task->client->sched->loop_time;
+
     task->task = (task_t) {
         .type = UNDELEGATE,
         .attrs.ctl = {
@@ -112,6 +114,8 @@ void client_write_cached_last_callback(ssize_t r, int err, void *udata) {
         return;
     }
 
+    task->client->health_check_timer->last_update = task->client->sched->loop_time;
+
     client_silent_disconnect(task);
 }
 
@@ -121,6 +125,8 @@ void client_write_cached_callback(ssize_t r, int err, void *udata) {
     if (r <= 0) {
         task->client->state = CLIENT_DISCONNECTED;
     }
+
+    task->client->health_check_timer->last_update = task->client->sched->loop_time;
 
     free(task);
 }
@@ -143,6 +149,8 @@ static void read_cache_callback(ssize_t r, int err, void *udata) {
         client_silent_disconnect((client_task_t*) task);
         return;
     }
+
+    task->client->health_check_timer->last_update = task->client->sched->loop_time;
 
     char *buffer = get_cache_block_buffer(task->current_block);
     size_t readen = (size_t) r + (size_t) ((char*) task->task.attrs.io.buffer - buffer);
@@ -234,8 +242,6 @@ void process_request_callback(ssize_t r, int err, void *udata) {
         return;
     }
 
-    task->client->health_check_timer->last_update = task->client->sched->loop_time;
-
     // Check for errors or connection closed
     if (r < 0) {
         fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->client->client_ip, strerror(err));
@@ -248,6 +254,8 @@ void process_request_callback(ssize_t r, int err, void *udata) {
         client_silent_disconnect((client_task_t*) task);
         return;
     }
+
+    task->client->health_check_timer->last_update = task->client->sched->loop_time;
 
     // Request is too big
     task->bytes_received += (size_t) r;
@@ -333,7 +341,7 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                     }
 
                     *head_block = (cache_block_external_t) {
-                        .external = true,
+                        .type = EXTERNAL_CACHE_BLOCK,
                         .size = 0,
                         .cap = 0,
                         .finished = false,
@@ -404,7 +412,7 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                         }
                         else if (task->client->entry->first_block != NULL &&
                                  task->client->entry->first_block->finished) {
-                            // Block is finished and empty - close connection
+                            // Block is finished and empty - close connection (adnormal situation)
                             client_silent_disconnect((client_task_t*) task);   
                         }
                         else {

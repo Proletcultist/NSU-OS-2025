@@ -56,7 +56,7 @@ void cache_entry_put(cache_entry_t *entry) {
     while (cursor != NULL) {
         cache_block_t *next = cursor->next;
 
-        if (cursor->external) {
+        if (cursor->type == EXTERNAL_CACHE_BLOCK) {
             free(((cache_block_external_t*) cursor)->data);
         }
         free(cursor);

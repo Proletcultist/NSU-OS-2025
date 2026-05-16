@@ -49,7 +49,16 @@ static void server_delegate_callback(int err, void *udata) {
 
     if (err != 0) {
         cache_delete(task->server->cache_entry->uri);
+        *((cache_block_external_t*) task->server->cache_entry->first_block) = (cache_block_external_t) {
+            .type = STATIC_EXTERNAL_CACHE_BLOCK,
+            .next = NULL,
+            .size = internal_server_error_response_size,
+            .cap = internal_server_error_response_size,
+            .finished = true,
+            .data = internal_server_error_response
+        };
         wakeup_all_clients(task->server);
+
         server_cleanup_callback(0, task);
     }
     else {
@@ -148,15 +157,8 @@ static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_
     return prev;
 }
 
-static void early_fail_server_connection(proxy_server_t server, char *msg, size_t msg_size) {
-    cache_delete(server.cache_entry->uri);
-
-    send_cached_to_all_clients(&server, &server.cache_entry->pending, msg, msg_size, true);
-
-    cache_entry_put(server.cache_entry);
-}
-
 static void close_server_connection(server_task_t *task) {
+    task->server->state = SERVER_DISCONNECTED;
     task->task = (task_t) {
         .type = UNDELEGATE,
         .attrs.ctl = {
@@ -168,11 +170,47 @@ static void close_server_connection(server_task_t *task) {
     aio_scheduler_schedule(task->server->sched, (task_t*) task);
 }
 
+static void early_fail_server_connection(proxy_server_t server, char *msg, size_t msg_size) {
+    cache_delete(server.cache_entry->uri);
+
+    if (msg != NULL) {
+        *((cache_block_external_t*) server.cache_entry->first_block) = (cache_block_external_t) {
+            .type = STATIC_EXTERNAL_CACHE_BLOCK,
+            .next = NULL,
+            .size = msg_size,
+            .cap = msg_size,
+            .finished = true,
+            .data = msg
+        };
+    }
+    server.cache_entry->last_block->finished = true;
+    send_cached_to_all_clients(&server, &server.cache_entry->pending, msg, msg_size, true);
+
+    cache_entry_put(server.cache_entry);
+}
+
 static void fail_server_connection(server_task_t *task, char *msg, size_t msg_size) {
-    task->server->state = SERVER_DISCONNECTED;
     cache_delete(task->server->cache_entry->uri);
 
+    if (msg != NULL) {
+        *((cache_block_external_t*) task->server->cache_entry->first_block) = (cache_block_external_t) {
+            .type = STATIC_EXTERNAL_CACHE_BLOCK,
+            .next = NULL,
+            .size = msg_size,
+            .cap = msg_size,
+            .finished = true,
+            .data = msg
+        };
+    }
+    task->server->cache_entry->last_block->finished = true;
     send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, msg, msg_size, true);
+
+    close_server_connection(task);
+}
+
+static void successfully_end_server_connection(server_task_t *task) {
+    task->server->cache_entry->last_block->finished = true;
+    send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, NULL, 0, true);
 
     close_server_connection(task);
 }
@@ -410,6 +448,8 @@ void try_connect_callback(ssize_t r, int err, void *udata) {
         return;
     }
 
+    task->server->health_check_timer->last_update = task->server->sched->loop_time;
+
     socklen_t len = sizeof(err);
     getsockopt(task->task.attrs.io.fd, SOL_SOCKET, SO_ERROR, &err, &len);
 
@@ -476,6 +516,7 @@ void write_request_callback(ssize_t w, int err, void *udata) {
         }
     }
     else {
+        task->server->health_check_timer->last_update = task->server->sched->loop_time;
         free(task);
     }
 }
@@ -490,26 +531,23 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
 
     if (w < 0) {
         fprintf(stderr, "[Error] Error while trying to read from %s: %s\n", task->server->cache_entry->uri.hostname, strerror(err));
-        task->server->cache_entry->last_block->finished = true;
         fail_server_connection((server_task_t*) task, NULL, 0);
         return;
     }
     else if (w == 0) {
         if (task->server->has_content_length) {
             fprintf(stderr, "[Error] Server %s terminated connection\n", task->server->cache_entry->uri.hostname);
-            task->server->cache_entry->last_block->finished = true;
             fail_server_connection((server_task_t*) task, NULL, 0);
         }
         else {
             fprintf(stderr, "[Info] Server %s terminated connection\n", task->server->cache_entry->uri.hostname);
 
-            task->server->cache_entry->last_block->finished = true;
-            send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, NULL, 0, true);
-
-            close_server_connection((server_task_t*) task);
+            successfully_end_server_connection(task);
         }
         return;
     }
+
+    task->server->health_check_timer->last_update = task->server->sched->loop_time;
 
     task->server->content_length -= (size_t) w;
 
@@ -525,7 +563,7 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
         }
 
         *following_block = (cache_block_in_place_t) {
-            .external = false,
+            .type = IN_PLACE_CACHE_BLOCK,
             .size = 0,
             .cap = new_cap,
             .finished = false
@@ -587,6 +625,8 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
         fail_server_connection((server_task_t*) task, bad_gateway_response, bad_gateway_response_size);
         return;
     }
+
+    task->server->health_check_timer->last_update = task->server->sched->loop_time;
 
     http_state_machine_feed(&task->sm, (size_t) r);
     while (http_state_machine_step(&task->sm)) {
@@ -656,7 +696,7 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                     }
 
                     *following_block = (cache_block_in_place_t) {
-                        .external = false,
+                        .type = IN_PLACE_CACHE_BLOCK,
                         .size = 0,
                         .cap = new_cap,
                         .finished = false
@@ -664,7 +704,7 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                 }
 
                 *((cache_block_external_t*) task->server->cache_entry->first_block) = (cache_block_external_t) {
-                    .external = true,
+                    .type = EXTERNAL_CACHE_BLOCK,
                     .size = size,
                     .cap = cap,
                     .finished = finished,
