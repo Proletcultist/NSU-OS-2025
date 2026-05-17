@@ -41,10 +41,10 @@ int main(int argc, char **argv) {
 
     ssize_t cache_cap = -1;
     int opt;
+    bool succ;
     while ((opt = getopt_long(argc, argv, "+c:h", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'c':
-                bool succ;
                 cache_cap = parse_ssize_t(optarg, &succ);
                 if (!succ) {
                     fprintf(stderr, "Incorrect value of cache capacity. Expected numver from range [-1, SSIZE_MAX], got: \"%s\"\n", optarg);
