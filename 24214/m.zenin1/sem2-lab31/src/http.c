@@ -323,7 +323,7 @@ static void analyze_req_line(http_state_machine_t *sm) {
         return;
     }
 
-    sm->uri.buffer = malloc(hostname_size + 1 + port_size + 1 + path_size + 1);
+    sm->uri.buffer = malloc(hostname_size + 1 + port_size + 1 + (path_size == 0 ? 1 : path_size) + 1);
     if (sm->uri.buffer != NULL) {
         sm->uri.hostname = sm->uri.buffer;
         memcpy(sm->uri.buffer, sm->data.arr + hostname_off, hostname_size);
@@ -333,9 +333,16 @@ static void analyze_req_line(http_state_machine_t *sm) {
         memcpy(sm->uri.buffer + hostname_size + 1, sm->data.arr + port_off, port_size);
         sm->uri.buffer[hostname_size + 1 + port_size] = '\0';
 
-        sm->uri.path = sm->uri.buffer + hostname_size + 1 + port_size + 1;
-        memcpy(sm->uri.buffer + hostname_size + 1 + port_size + 1, sm->data.arr + path_off, path_size);
-        sm->uri.buffer[hostname_size + 1 + port_size + 1 + path_size] = '\0';
+        if (path_size == 0) {
+            sm->uri.path = sm->uri.buffer + hostname_size + 1 + port_size + 1;
+            memcpy(sm->uri.buffer + hostname_size + 1 + port_size + 1, "/", 1);
+            sm->uri.buffer[hostname_size + 1 + port_size + 1 + 1] = '\0';
+        }
+        else {
+            sm->uri.path = sm->uri.buffer + hostname_size + 1 + port_size + 1;
+            memcpy(sm->uri.buffer + hostname_size + 1 + port_size + 1, sm->data.arr + path_off, path_size);
+            sm->uri.buffer[hostname_size + 1 + port_size + 1 + 1] = '\0';
+        }
     }
 
     sm->state = READ_REQUEST_LINE;
