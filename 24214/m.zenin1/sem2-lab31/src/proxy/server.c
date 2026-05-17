@@ -58,18 +58,6 @@ static bool try_cleanup(proxy_client_t *client) {
     return true;
 }
 
-static void cleanup_disconnected_beg(proxy_client_t **clients) {
-    while (*clients != NULL) {
-        proxy_client_t *next = (*clients)->next;
-        if (try_cleanup(*clients)) {
-            (*clients) = next;
-        }
-        else {
-            break;
-        }
-    }
-}
-
 static void send_task_to_client(proxy_server_t *server, client_task_t *task) {
     // If client is newbie - change his state and update the timer
     if (task->client->state == CLIENT_WAITS_FOR_DATA) {
@@ -84,8 +72,6 @@ static void send_task_to_client(proxy_server_t *server, client_task_t *task) {
 // Move *clients to the new start of linked list
 // Return last client in list
 static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_client_t **clients, char *buffer, size_t size, bool last) {
-    cleanup_disconnected_beg(clients);
-
     void (*callback)(ssize_t, int, void*);
     if (last) {
         callback = client_write_cached_last_callback;
@@ -94,9 +80,11 @@ static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_
         callback = client_write_cached_callback;
     }
 
-    // Since *clients is known to be not disconnected or NULL it's ok to init prev like this
-    proxy_client_t *prev = *clients;
-    proxy_client_t *cursor = *clients;
+    proxy_client_t sentinel;
+    sentinel.next = *clients;
+
+    proxy_client_t *prev = &sentinel;
+    proxy_client_t *cursor = sentinel.next;
     while (cursor != NULL) {
         proxy_client_t *next = cursor->next;
 
@@ -125,12 +113,18 @@ static proxy_client_t* send_cached_to_all_clients(proxy_server_t *server, proxy_
         };
         send_task_to_client(server, task);
 
-        // If last is set, prev may be already freed, but when last is set we don't really care
-        prev = cursor;
-        cursor = next;
+        if (last) {
+            prev->next = next;
+            cursor = next;
+        }
+        else {
+            prev = cursor;
+            cursor = next;
+        }
     }
 
-    return prev;
+    *clients = sentinel.next;
+    return prev == &sentinel ? NULL : prev;
 }
 
 static void close_server_connection(server_task_t *task) {

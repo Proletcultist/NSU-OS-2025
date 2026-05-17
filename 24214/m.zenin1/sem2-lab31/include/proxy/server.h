@@ -7,7 +7,7 @@
 #include "scheduler/aio_scheduler.h"
 #include "http.h"
 
-#define SERVER_TIMEOUT 120
+#define SERVER_TIMEOUT 5
 
 typedef enum proxy_server_state {
     SERVER_CONNECTION_IN_PROGRESS,
