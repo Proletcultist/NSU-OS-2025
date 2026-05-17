@@ -188,7 +188,7 @@ void client_health_check_callback(int err, time_t time, void *udata) {
     else if (err == ENOMEM) {
         panic("Out of memory");
     }
-    else if (err == ECANCELED || err == EINVAL || timer->client->state == CLIENT_DISCONNECTED) {
+    else if (err == ECANCELED || timer->client->state == CLIENT_DISCONNECTED) {
         timer->client->health_check_timer = NULL;
         free(timer);
         return;

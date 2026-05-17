@@ -5,8 +5,9 @@
 #include <errno.h>
 #include <sys/socket.h>
 #include <netdb.h>
-#include "proxy/server.h"
 #include "scheduler/aio_scheduler.h"
+#include "cache/cache.h"
+#include "proxy/server.h"
 #include "proxy/util.h"
 #include "proxy/client.h"
 #include "proxy/responses.h"
@@ -29,6 +30,27 @@ static void server_cleanup_callback(int err, void *udata) {
     cache_entry_put(task->server->cache_entry);
     free(task->server);
     free(task);
+}
+
+static void cache_entry_postprocess(aio_scheduler_t *sched, cache_entry_t *entry) {
+    // If entry successfully commited to cache - start expiration timer
+    if (commit_entry(entry)) {
+        cache_expire_timer_t *timer = malloc(sizeof(cache_expire_timer_t));
+        if (timer == NULL) {
+            panic("Out of memory");
+        }
+
+        *timer = (cache_expire_timer_t) {
+            .task.type = ADD_TIMER,
+            .task.attrs.timer = {
+                .time = CACHE_EXPIRATION_TIME,
+                .data = timer,
+                .callback = cache_expired_callback
+            },
+            .entry = entry
+        };
+        aio_scheduler_schedule(sched, (task_t*) timer);
+    }
 }
 
 static void server_delegate_callback(int err, void *udata) {
@@ -188,7 +210,7 @@ static void server_health_check_callback(int err, time_t time, void *udata) {
     else if (err == ENOMEM) {
         panic("Out of memory");
     }
-    else if (err == ECANCELED || err == EINVAL || timer->server->state == SERVER_DISCONNECTED) {
+    else if (err == ECANCELED || timer->server->state == SERVER_DISCONNECTED) {
         timer->server->health_check_timer = NULL;
         free(timer);
         return;
@@ -506,7 +528,7 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
             task->server->cache_entry->last_block->finished = true;
             send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, NULL, 0, true);
 
-            commit_entry(task->server->cache_entry);
+            cache_entry_postprocess(task->server->sched, task->server->cache_entry);
             close_server_connection(task);
         }
         return;
@@ -546,7 +568,7 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
         write_next_cache_block(task);
     }
     else {
-        commit_entry(task->server->cache_entry);
+        cache_entry_postprocess(task->server->sched, task->server->cache_entry);
         close_server_connection(task);
     }
 }
@@ -686,7 +708,7 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                     write_next_cache_block((server_task_t*) task);
                 }
                 else {
-                    commit_entry(task->server->cache_entry);
+                    cache_entry_postprocess(task->server->sched, task->server->cache_entry);
                     close_server_connection((server_task_t*) task);
                 }
                 return;

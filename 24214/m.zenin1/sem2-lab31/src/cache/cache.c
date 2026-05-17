@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include "cache/cache.h"
+#include "proxy/util.h"
 
 static ssize_t cache_cap;
 static size_t cache_size;
@@ -12,19 +14,34 @@ void cache_init(ssize_t c_cap) {
     cache_size = 0;
 }
 
-void commit_entry(cache_entry_t *entry) {
+bool commit_entry(cache_entry_t *entry) {
     // If there is no upper bound for cache size - do nothing
     if (cache_cap == -1) {
-        return;
+        return true;
     }
 
     // If entry is too big - delete it
-    if (cache_size + entry->entry_size <= cache_cap) {
+    if (cache_size + entry->entry_size <= (size_t) cache_cap) {
         cache_size += entry->entry_size;
+        return true;
     }
     else {
         cache_delete(entry->uri);
+        return false;
     }
+}
+
+void cache_expired_callback(int err, time_t time, void *udata) {
+    cache_expire_timer_t *timer = udata;
+
+    if (err == ENOMEM) {
+        panic("Out of memory");
+    }
+    else if (err != ECANCELED) {
+        cache_delete(timer->entry->uri);
+    }
+
+    free(timer);
 }
 
 cache_entry_t* cache_encache_or_get_ref(uri_t uri, cache_entry_t *entry) {
@@ -89,8 +106,8 @@ void cache_entry_put(cache_entry_t *entry) {
 void cache_delete(uri_t uri) {
     cache_entry_t **ptr = map_uri_cache_entry_ptr_t_get(&cache, uri);
     if (ptr != NULL) {
-        cache_entry_put(*ptr);
         map_uri_cache_entry_ptr_t_remove(&cache, uri);
+        cache_entry_put(*ptr);
     }
 }
 
