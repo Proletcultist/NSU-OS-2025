@@ -2,10 +2,29 @@
 #include <stdlib.h>
 #include "cache/cache.h"
 
+static ssize_t cache_cap;
+static size_t cache_size;
 static map_uri_cache_entry_ptr_t cache;
 
-void cache_init() {
+void cache_init(ssize_t c_cap) {
     cache = (map_uri_cache_entry_ptr_t) HASHMAP_INITIALIZER;
+    cache_cap = c_cap;
+    cache_size = 0;
+}
+
+void commit_entry(cache_entry_t *entry) {
+    // If there is no upper bound for cache size - do nothing
+    if (cache_cap == -1) {
+        return;
+    }
+
+    // If entry is too big - delete it
+    if (cache_size + entry->entry_size <= cache_cap) {
+        cache_size += entry->entry_size;
+    }
+    else {
+        cache_delete(entry->uri);
+    }
 }
 
 cache_entry_t* cache_encache_or_get_ref(uri_t uri, cache_entry_t *entry) {
@@ -29,6 +48,7 @@ void cache_entry_add_pending(cache_entry_t *entry, proxy_client_t *client) {
 }
 
 void cache_entry_occupy_last_block(cache_entry_t *entry, size_t size) {
+    entry->entry_size += size;
     entry->last_block->size += size;
 }
 

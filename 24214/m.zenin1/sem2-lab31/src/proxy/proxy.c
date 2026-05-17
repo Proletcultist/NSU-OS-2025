@@ -170,10 +170,10 @@ accept_connection_defer_0:
 }
 
 
-int start_proxy(struct in_addr ip, in_port_t port) {
+int start_proxy(struct in_addr ip, in_port_t port, ssize_t cache_cap) {
     int ret = 0;
 
-    cache_init();
+    cache_init(cache_cap);
 
     listening = socket(AF_INET, SOCK_STREAM, 0);
     if (listening < 0) {

@@ -47,8 +47,6 @@ void client_respond_error_callback(ssize_t r, int err, void *udata) {
         fprintf(stderr, "[Error] Client terminated connection\n");
     }
 
-    task->client->health_check_timer->last_update = task->client->sched->loop_time;
-
     task->task = (task_t) {
         .type = UNDELEGATE,
         .attrs.ctl = {

@@ -9,4 +9,5 @@ bool ci_memcmp(char *s1, char *s2, size_t n);
 bool mem_compare_trimed(char *a, size_t a_size, char *b, size_t b_size);
 struct addrinfo* resolve_address(char *hostname, char *port);
 size_t parse_size_t_trimmed(char *str, size_t size, bool *succ);
+ssize_t parse_ssize_t(char *str, bool *succ);
 

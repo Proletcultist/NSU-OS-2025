@@ -60,6 +60,39 @@ size_t parse_size_t_trimmed(char *str, size_t size, bool *succ) {
     return ret;
 }
 
+ssize_t parse_ssize_t(char *str, bool *succ) {
+    if (strcmp(str, "-1") == 0) {
+        *succ = true;
+        return -1;
+    }
+
+    if (!isdigit(*str)){
+        *succ = false;
+        return 0;
+    }
+
+    ssize_t ret = 0;
+    while (isdigit(*str)) {
+        ssize_t prev = ret;
+        ret *= 10;
+        ret += (*str) - '0';
+        if (prev > ret) {
+            *succ = false;
+            return 0;
+        }
+
+        str++;
+    }
+
+    if (*str != '\0') {
+        *succ = false;
+        return 0;
+    }
+
+    *succ = true;
+    return ret;
+}
+
 void generate_request(char **buffer, size_t *size, uri_t uri) {
     size_t hostname_len = strlen(uri.hostname);
     size_t port_len = strlen(uri.port);

@@ -71,7 +71,7 @@ static void cleanup_disconnected_beg(proxy_client_t **clients) {
 }
 
 static void send_task_to_client(proxy_server_t *server, client_task_t *task) {
-    // If client is newbie - change his state and updata timer
+    // If client is newbie - change his state and update the timer
     if (task->client->state == CLIENT_WAITS_FOR_DATA) {
         task->client->health_check_timer->last_update = server->sched->loop_time;
         task->client->state = CLIENT_RECEIVING_SERVER_DATA;
@@ -180,13 +180,6 @@ static void fail_server_connection(server_task_t *task, char *msg, size_t msg_si
     }
     task->server->cache_entry->last_block->finished = true;
     send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, msg, msg_size, true);
-
-    close_server_connection(task);
-}
-
-static void successfully_end_server_connection(server_task_t *task) {
-    task->server->cache_entry->last_block->finished = true;
-    send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, NULL, 0, true);
 
     close_server_connection(task);
 }
@@ -314,7 +307,6 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
         freeaddrinfo(res);
     }
 
-    // Schedule delegate server fd
     server_task_t *delegate_task = malloc(sizeof(server_task_t));
     if (delegate_task == NULL) {
         panic("Out of memory");
@@ -517,7 +509,11 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
         else {
             fprintf(stderr, "[Info] Server %s terminated connection\n", task->server->cache_entry->uri.hostname);
 
-            successfully_end_server_connection(task);
+            task->server->cache_entry->last_block->finished = true;
+            send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, NULL, 0, true);
+
+            commit_entry(task->server->cache_entry);
+            close_server_connection(task);
         }
         return;
     }
@@ -556,6 +552,7 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
         write_next_cache_block(task);
     }
     else {
+        commit_entry(task->server->cache_entry);
         close_server_connection(task);
     }
 }
@@ -680,11 +677,12 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
 
                 *((cache_block_external_t*) task->server->cache_entry->first_block) = (cache_block_external_t) {
                     .type = EXTERNAL_CACHE_BLOCK,
-                    .size = size,
+                    .size = 0,
                     .cap = cap,
                     .finished = finished,
                     .data = buffer
                 };
+                cache_entry_occupy_last_block(task->server->cache_entry, size);
                 if (following_block != NULL) {
                     cache_entry_add_block(task->server->cache_entry, (cache_block_t*) following_block);
                 }
@@ -694,6 +692,7 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                     write_next_cache_block((server_task_t*) task);
                 }
                 else {
+                    commit_entry(task->server->cache_entry);
                     close_server_connection((server_task_t*) task);
                 }
                 return;
