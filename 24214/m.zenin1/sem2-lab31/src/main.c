@@ -7,6 +7,7 @@
 #include <getopt.h>
 #include <sys/types.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include "proxy/proxy.h"
 #include "proxy/util.h"
 
