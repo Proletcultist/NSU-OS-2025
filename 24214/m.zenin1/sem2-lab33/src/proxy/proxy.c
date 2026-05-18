@@ -10,6 +10,8 @@
 #include <unistd.h>
 #include <stddef.h>
 #include <signal.h>
+#include <pthread.h>
+#include "proxy/proxy.h"
 #include "scheduler/aio_scheduler.h"
 #include "scheduler/aio_signal.h"
 #include "http.h"
@@ -20,7 +22,13 @@
 
 #define SIGGRACEFULSHUT 0
 
-static aio_scheduler_t sched;
+static aio_scheduler_t master_sched;
+
+static aio_scheduler_t *worker_scheds;
+static scheduler_run_mode_t workers_run_mode;
+static size_t workers_amount;
+static size_t next_worker_index;
+
 static int listening;
 static bool alive;
 
@@ -37,15 +45,16 @@ static void stop_signal_callback(int err, void *udata) {
        .attrs.ctl = {
            .fd = listening,
            .data = &undelegate_task,
+           .callback = NULL
        }
     };
-    aio_scheduler_schedule(&sched, &undelegate_task);
+    aio_scheduler_schedule(&master_sched, &undelegate_task);
 }
 
 static void stop_signal_handler(int sig) {
     int saved_errno = errno;
     if (alive) {
-        aio_signal(&sched, SIGGRACEFULSHUT);
+        aio_signal(&master_sched, SIGGRACEFULSHUT);
         alive = false;
     }
     errno = saved_errno;
@@ -83,9 +92,11 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     *client = (proxy_client_t) {
         .state = CLIENT_SENDING_REQUEST,
         .fd = fd,
-        .sched = &sched,
+        .sched = &worker_scheds[next_worker_index],
         .entry = NULL
     };
+    fprintf(stderr, "[Info] Scheduled client on worker %zu\n", next_worker_index);
+    next_worker_index = (next_worker_index + 1) % workers_amount;
     if (connected_addr.sa_family == AF_INET) {
         inet_ntop(AF_INET, &((struct sockaddr_in*) &connected_addr)->sin_addr, client->client_ip, INET_ADDRSTRLEN);
         fprintf(stderr, "[Info] Connected: %s\n", client->client_ip);
@@ -147,14 +158,14 @@ static void accept_connection(ssize_t r, int err, void *udata) {
         },
         .client = client,
         .cleanup_client = true,
-        .last_update = sched.loop_time
+        .last_update = master_sched.loop_time
     };
     client->health_check_timer = timer_task;
 
     delegate_task->task.next = (task_t*) req_task;
     req_task->task.next = (task_t*) timer_task;
     timer_task->task.next = NULL;
-    aio_scheduler_schedule_all(&sched, (task_t*) delegate_task);
+    aio_scheduler_schedule_all(client->sched, (task_t*) delegate_task);
     goto accept_connection_defer_0;
 
 accept_connection_defer_4:
@@ -168,20 +179,57 @@ accept_connection_defer_1:
     fprintf(stderr, "[Error] Failed to allocate structures for cloent\n");
     close(fd);
 accept_connection_defer_0:
-    aio_scheduler_schedule(&sched, task);
+    aio_scheduler_schedule(&master_sched, task);
 }
 
+static void* worker_routine(void *arg) {
+    aio_scheduler_t *sched = arg;
 
-int start_proxy(struct in_addr ip, in_port_t port, ssize_t cache_cap) {
+    int ret;
+    // Run till loop dies or error occures
+    do {
+        ret = aio_scheduler_proceed(sched, workers_run_mode);
+    } while (ret > 0);
+
+    if (ret < 0) {
+        panic("Worker thread failed");
+    }
+
+    return NULL;
+}
+
+int start_proxy(struct in_addr ip, in_port_t port, ssize_t cache_cap, size_t ws) {
     int ret = 0;
+    pthread_t tids[workers_amount];
 
+    worker_scheds = malloc(sizeof(aio_scheduler_t) * ws);
+    if (worker_scheds == NULL) {
+        perror("[Error failed to allocate worker scheds\n");
+        ret = -1;
+        goto start_proxy_defer_0;
+    }
+    for (workers_amount = 0; workers_amount < ws; workers_amount++) {
+        if (aio_scheduler_construct(&worker_scheds[workers_amount])) {
+            perror("[Error] Failed to construct worker scheduler\n");
+            ret = -1;
+            goto start_proxy_defer_1;
+        }
+    }
+    if (aio_scheduler_construct(&master_sched)) {
+        perror("[Error] Failed to construct master scheduler\n");
+        ret = -1;
+        goto start_proxy_defer_1;
+    }
+    scheduler_run_mode_t run_mode = RUN_DEFAULT;
+    workers_run_mode = RUN_DEFAULT;
+    next_worker_index = 0;
     cache_init(cache_cap);
 
     listening = socket(AF_INET, SOCK_STREAM, 0);
     if (listening < 0) {
         perror("[Error] Failed to create listening socket");
         ret = -1;
-        goto start_proxy_defer_0;
+        goto start_proxy_defer_2;
     }
 
     struct sockaddr_in addr = {.sin_family = AF_INET,
@@ -191,28 +239,35 @@ int start_proxy(struct in_addr ip, in_port_t port, ssize_t cache_cap) {
     if (bind(listening, (struct sockaddr*) &addr, sizeof(addr))) {
         perror("[Error] Failed to bind listening socket");
         ret = -1;
-        goto start_proxy_defer_1;
+        goto start_proxy_defer_3;
     }
     if (listen(listening, 0)) {
         perror("[Error] Failed to listen on socket");
         ret = -1;
-        goto start_proxy_defer_1;
+        goto start_proxy_defer_3;
     }
 
-    if (aio_scheduler_construct(&sched)) {
-        perror("[Error] Failed to construct scheduler\n");
-        ret = -1;
-        goto start_proxy_defer_1;
+    sigset_t worker_sigset;
+    sigset_t saved_sigset;
+    sigfillset(&worker_sigset);
+    pthread_sigmask(SIG_SETMASK, &worker_sigset, &saved_sigset);
+
+    size_t threads_started;
+    for (threads_started = 0; threads_started < workers_amount; threads_started++) {
+        if (pthread_create(&tids[threads_started], NULL, worker_routine, &worker_scheds[threads_started])) {
+            fprintf(stderr, "[Error] Failed to start worker thread\n");
+            ret = -1;
+            goto start_proxy_defer_4;
+        }
     }
 
-    scheduler_run_mode_t run_mode = RUN_DEFAULT;
-
+    pthread_sigmask(SIG_SETMASK, &saved_sigset, NULL);
     signal_handler_t stop_signal = {
         .signum = SIGGRACEFULSHUT,
         .callback = stop_signal_callback,
         .data = &run_mode
     };
-    aio_add_signal_handler(&sched, &stop_signal);
+    aio_add_signal_handler(&master_sched, &stop_signal);
 
     alive = true;
 
@@ -242,18 +297,34 @@ int start_proxy(struct in_addr ip, in_port_t port, ssize_t cache_cap) {
        }
     };
 
-    aio_scheduler_schedule(&sched, &delegate_task);
-    aio_scheduler_schedule(&sched, &accept_task);
+    aio_scheduler_schedule(&master_sched, &delegate_task);
+    aio_scheduler_schedule(&master_sched, &accept_task);
 
     // Run till loop dies or error occures
     do {
-        ret = aio_scheduler_proceed(&sched, run_mode);
+        ret = aio_scheduler_proceed(&master_sched, run_mode);
     } while (ret > 0);
 
-    aio_scheduler_destruct(&sched);
-start_proxy_defer_1:
+
+start_proxy_defer_4:
+    workers_run_mode = RUN_FOR_IO;
+    for (size_t i = 0; i < threads_started; i++) {
+        aio_signal(&worker_scheds[i], SIGGRACEFULSHUT);
+    }
+
+    for (size_t i = 0; i < threads_started; i++) {
+        pthread_join(tids[i], NULL);
+    }
+start_proxy_defer_3:
     close(listening);
-start_proxy_defer_0: 
+start_proxy_defer_2:
     cache_destruct();
+    aio_scheduler_destruct(&master_sched);
+start_proxy_defer_1:
+    for (size_t i = 0; i < workers_amount; i++) {
+        aio_scheduler_destruct(&worker_scheds[i]);
+    }
+    free(worker_scheds);
+start_proxy_defer_0: 
     return ret;
 }
