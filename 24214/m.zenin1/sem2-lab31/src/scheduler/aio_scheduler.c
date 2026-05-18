@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <stdatomic.h>
 #include "scheduler/aio_scheduler.h"
 
 static char void_buf[32];
@@ -330,13 +331,15 @@ void aio_add_signal_handler(aio_scheduler_t *sched, signal_handler_t *handler) {
 
 static void check_signals(aio_scheduler_t *sched) {
     signal_handler_t *handler = sched->signal_handlers[0];
-    sched->pending_tasks[0] = NULL;
-    sched->pending_tasks[1] = NULL;
+    sched->signal_handlers[0] = NULL;
+    sched->signal_handlers[1] = NULL;
+
+    uint32_t curr_signals = atomic_exchange_explicit(&sched->pending_signals, 0, memory_order_acquire);
 
     while (handler != NULL) {
         signal_handler_t *next = handler->next;
 
-        if (((1u << handler->signum) & sched->pending_signals) && handler->callback) {
+        if (((1u << handler->signum) & curr_signals) && handler->callback) {
             handler->callback(0, handler->data);
         }
         else {
@@ -345,8 +348,6 @@ static void check_signals(aio_scheduler_t *sched) {
 
         handler = next;
     }
-
-    sched->pending_signals = 0;
 }
 
 static void clear_signals_pipe(aio_scheduler_t *sched) {
@@ -357,11 +358,11 @@ static void clear_signals_pipe(aio_scheduler_t *sched) {
 }
 
 int aio_signal(aio_scheduler_t *sched, uint8_t signum) {
-    if (signum >= sizeof(sched->pending_signals)) {
+    if (signum >= sizeof(sched->pending_signals) * 8) {
         return -1;
     }
 
-    sched->pending_signals |= (1u << signum);
+    atomic_fetch_or_explicit(&sched->pending_signals, (1u << signum), memory_order_release);
 
     int write_err;
     do {
