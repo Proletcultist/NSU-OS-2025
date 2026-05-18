@@ -103,7 +103,7 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     }
     else {
         strncpy(client->client_ip, "Unknown", sizeof(client->client_ip) - 1);
-        client->client_ip[sizeof(client->client_ip - 1)] = '\0';
+        client->client_ip[sizeof(client->client_ip) - 1] = '\0';
     }
 
     client_task_t *delegate_task = malloc(sizeof(client_task_t));
@@ -200,7 +200,7 @@ static void* worker_routine(void *arg) {
 
 int start_proxy(struct in_addr ip, in_port_t port, ssize_t cache_cap, size_t ws) {
     int ret = 0;
-    pthread_t tids[workers_amount];
+    pthread_t tids[ws];
 
     worker_scheds = malloc(sizeof(aio_scheduler_t) * ws);
     if (worker_scheds == NULL) {

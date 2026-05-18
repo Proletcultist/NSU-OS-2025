@@ -76,7 +76,7 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    if (start_proxy(ip, port, cache_cap, 2)) {
+    if (start_proxy(ip, port, cache_cap, 8)) {
         return -1;
     }
 
