@@ -117,6 +117,7 @@ void cache_entry_put(cache_entry_t *entry) {
 
         cursor = next;
     }
+    pthread_mutex_destroy(&entry->mtx);
     free(entry);
 }
 

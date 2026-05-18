@@ -157,6 +157,7 @@ static void read_cache_callback(ssize_t r, int err, void *udata) {
         task->task.attrs.io.buffer = buffer + readen;
         task->task.attrs.io.size = task->current_block->size - readen;
         aio_scheduler_schedule(task->client->sched, (task_t*) task);
+        pthread_mutex_unlock(&task->client->entry->mtx);
     }
     else if (task->current_block->finished && task->current_block->next != NULL && task->current_block->next->size > 0) {
         // Block is finished, but there is next with data
@@ -164,10 +165,12 @@ static void read_cache_callback(ssize_t r, int err, void *udata) {
         task->task.attrs.io.buffer = get_cache_block_buffer(task->current_block);
         task->task.attrs.io.size = task->current_block->size;
         aio_scheduler_schedule(task->client->sched, (task_t*) task);
+        pthread_mutex_unlock(&task->client->entry->mtx);
     }
     else if (task->current_block->finished && task->current_block->next == NULL) {
         // Block is finished and there is no next block - close connection
         client_silent_disconnect((client_task_t*) task);   
+        pthread_mutex_unlock(&task->client->entry->mtx);
     }
     else {
         // No data available - add to pending
@@ -175,9 +178,9 @@ static void read_cache_callback(ssize_t r, int err, void *udata) {
         // Disable client cleanuping - only server connect can add tasks to client from now on
         task->client->health_check_timer->cleanup_client = false;
         cache_entry_add_pending(task->client->entry, task->client);
+        pthread_mutex_unlock(&task->client->entry->mtx);
         free(task);
     }
-    pthread_mutex_unlock(&task->client->entry->mtx);
 }
 
 void client_health_check_callback(int err, time_t time, void *udata) {
@@ -392,12 +395,14 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                                 .current_block = task->client->entry->first_block
                             };
                             aio_scheduler_schedule(task->client->sched, (task_t*) cache_task);
+                            pthread_mutex_unlock(&task->client->entry->mtx);
                             free(task);
                         }
                         else if (task->client->entry->first_block != NULL &&
                                  task->client->entry->first_block->finished) {
                             // Block is finished and empty - close connection (adnormal situation)
                             client_silent_disconnect((client_task_t*) task);   
+                            pthread_mutex_unlock(&task->client->entry->mtx);
                         }
                         else {
                             // No data available - add to pending
@@ -405,9 +410,9 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                             // Disable client cleanuping - only server connect can add tasks to client from now on
                             task->client->health_check_timer->cleanup_client = false;
                             cache_entry_add_pending(task->client->entry, task->client);
+                            pthread_mutex_unlock(&task->client->entry->mtx);
                             free(task);
                         }
-                        pthread_mutex_unlock(&task->client->entry->mtx);
                     }
                 }
                 return;

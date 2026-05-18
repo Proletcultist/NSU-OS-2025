@@ -341,7 +341,7 @@ static void analyze_req_line(http_state_machine_t *sm) {
         else {
             sm->uri.path = sm->uri.buffer + hostname_size + 1 + port_size + 1;
             memcpy(sm->uri.buffer + hostname_size + 1 + port_size + 1, sm->data.arr + path_off, path_size);
-            sm->uri.buffer[hostname_size + 1 + port_size + 1 + 1] = '\0';
+            sm->uri.buffer[hostname_size + 1 + port_size + 1 + path_size] = '\0';
         }
     }
 
