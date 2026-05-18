@@ -308,7 +308,7 @@ int start_proxy(struct in_addr ip, in_port_t port, ssize_t cache_cap, size_t ws)
 
 start_proxy_defer_4:
     workers_run_mode = RUN_FOR_IO;
-    for (size_t i = 0; i < threads_started; i++) {
+    for (size_t i = 0; i < workers_amount; i++) {
         aio_signal(&worker_scheds[i], SIGGRACEFULSHUT);
     }
 

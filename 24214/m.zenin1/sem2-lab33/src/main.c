@@ -25,34 +25,50 @@ int parse_in_port(const char *str, in_port_t *out_port) {
 
 int main(int argc, char **argv) {
 
-    struct option long_opts[] = {{
-                                    .name = "cache-cap",
-                                    .has_arg = 1,
-                                    .flag = NULL,
-                                    .val = 'c'
-                                },
-                                {
-                                    .name = "help",
-                                    .has_arg = 0,
-                                    .flag = NULL,
-                                    .val = 'h'
-                                }, {}};
+    struct option long_opts[] = {
+        {
+            .name = "cache-cap",
+            .has_arg = 1,
+            .flag = NULL,
+            .val = 'c'
+        },
+        {
+            .name = "help",
+            .has_arg = 0,
+            .flag = NULL,
+            .val = 'h'
+        },
+        {
+            .name = "workers",
+            .has_arg = 0,
+            .flag = NULL,
+            .val = 'w'
+        },
+    {}};
 
+    size_t workers = 1;
     ssize_t cache_cap = -1;
     int opt;
     bool succ;
-    while ((opt = getopt_long(argc, argv, "+c:h", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "+c:w:h", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'c':
                 cache_cap = parse_ssize_t(optarg, &succ);
                 if (!succ) {
-                    fprintf(stderr, "Incorrect value of cache capacity. Expected numver from range [-1, SSIZE_MAX], got: \"%s\"\n", optarg);
+                    fprintf(stderr, "Incorrect value of cache capacity. Expected number from range [-1, SSIZE_MAX], got: \"%s\"\n", optarg);
                     return -1;
                 }
                 break;
             case 'h':
-                fprintf(stdout, "hproxy [options] ip port\nOptions:\n\t-h, --help\t\t\t\tDisplay this information.\n\t-c, --cache-cap <cache_capacity>\tSet cache capacity to <cache_capacity>.\n\t\t\t\t\t\t<cache_capacity> must be a number from range [-1, SSIZE_MAX]\n");
+                fprintf(stdout, "hproxy [options] ip port\nOptions:\n\t-h, --help\t\t\t\tDisplay this information.\n\t-c, --cache-cap <cache_capacity>\tSet cache capacity to <cache_capacity>.\n\t\t\t\t\t\t<cache_capacity> must be a number from range [-1, SSIZE_MAX]\n\t-w, --workers\t\t\t\tSet workers amount, default: 1\n");
                 return 0;
+            case 'w':
+                workers = parse_size_t(optarg, &succ);
+                if (!succ) {
+                    fprintf(stderr, "Incorrect value of workers amount. Expected number from range [0, SIZE_MAX], got: \"%s\"\n", optarg);
+                    return -1;
+                }
+                break;
             case '?':
             default:
                 return -1;
@@ -76,7 +92,7 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    if (start_proxy(ip, port, cache_cap, 8)) {
+    if (start_proxy(ip, port, cache_cap, workers)) {
         return -1;
     }
 
