@@ -57,7 +57,7 @@ typedef struct aio_scheduler {
     vector_timer_t timers;
 
     int signals_pipe;
-    volatile atomic_uint_fast32_t pending_signals;
+    atomic_uint_fast32_t pending_signals;
     signal_handler_t *signal_handlers[2];
 
     task_t *pending_tasks[2];
