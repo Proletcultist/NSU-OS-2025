@@ -20,6 +20,7 @@ int aio_scheduler_construct(aio_scheduler_t *sched) {
       .timers = (vector_timer_t) VECTOR_INITIALIZER,
       .pending_signals = 0,
       .signal_handlers = {NULL, NULL}, 
+      .pending_tasks_mtx = PTHREAD_MUTEX_INITIALIZER,
       .pending_tasks = {NULL, NULL}
     };
 
@@ -260,9 +261,11 @@ static bool serve_wait_connection_task(task_t *task, ssize_t *res, int *err) {
 
 
 static void process_pending_tasks(aio_scheduler_t *sched) {
+    pthread_mutex_lock(&sched->pending_tasks_mtx);
     task_t *task = sched->pending_tasks[0];
     sched->pending_tasks[0] = NULL;
     sched->pending_tasks[1] = NULL;
+    pthread_mutex_unlock(&sched->pending_tasks_mtx);
 
     while (task != NULL) {
         task_t *next = task->next;
@@ -290,6 +293,7 @@ static void process_pending_tasks(aio_scheduler_t *sched) {
 }
 
 void aio_scheduler_schedule_all(aio_scheduler_t *sched, task_t *task) {
+    pthread_mutex_lock(&sched->pending_tasks_mtx);
 
     if (sched->pending_tasks[0] == NULL) {
         sched->pending_tasks[0] = task;
@@ -303,6 +307,8 @@ void aio_scheduler_schedule_all(aio_scheduler_t *sched, task_t *task) {
     }
 
     sched->pending_tasks[1] = task;
+
+    pthread_mutex_unlock(&sched->pending_tasks_mtx);
 
     int write_err;
     do {
@@ -613,5 +619,7 @@ void aio_scheduler_destruct(aio_scheduler_t *sched) {
         }
     }
     vector_timer_t_destruct(&sched->timers);
+
+    pthread_mutex_destroy(&sched->pending_tasks_mtx);
 }
 

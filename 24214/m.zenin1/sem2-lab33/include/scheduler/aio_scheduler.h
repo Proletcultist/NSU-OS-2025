@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <pthread.h>
 #include "scheduler/task_list.h"
 #include "scheduler/timer.h"
 #include "scheduler/aio_signal.h"
@@ -60,6 +61,7 @@ typedef struct aio_scheduler {
     atomic_uint_fast32_t pending_signals;
     signal_handler_t *signal_handlers[2];
 
+    pthread_mutex_t pending_tasks_mtx;
     task_t *pending_tasks[2];
 } aio_scheduler_t;
 
@@ -69,8 +71,10 @@ void aio_add_signal_handler(aio_scheduler_t *sched, signal_handler_t *handler);
 // 0 - loop died, > 0 - signal occured , < 0 - error
 int aio_scheduler_proceed(aio_scheduler_t *sched, scheduler_run_mode_t run_mode);
 void aio_scheduler_destruct(aio_scheduler_t *sched);
+
+// MT-Safe
 void aio_scheduler_schedule_all(aio_scheduler_t *sched, task_t *task);
 void aio_scheduler_schedule(aio_scheduler_t *sched, task_t *task);
 
-// Async-signal safe
+// Async-signal safe and MT-Safe
 int aio_signal(aio_scheduler_t *sched, uint8_t signum);
