@@ -655,15 +655,7 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                 http_state_machine_get_header_name(&task->sm, task->sm.last_header, &name, &name_size);
                 http_state_machine_get_header_value(&task->sm, task->sm.last_header, &value, &value_size);
 
-                fprintf(stderr, "[Info] %s Field-name: \"", task->server->cache_entry->uri.hostname);
-                for (size_t i = 0; i < name_size; i++) {
-                    fprintf(stderr, "%c", name[i]);
-                }
-                fprintf(stderr, "\" Field-value: \"");
-                for (size_t i = 0; i < value_size; i++) {
-                    fprintf(stderr, "%c", value[i]);
-                }
-                fprintf(stderr, "\"\n");
+                fprintf(stderr, "[Info] %s Field-name: \"%.*s\" Field-value: \"%.*s\"\n", task->server->cache_entry->uri.hostname, (int) name_size, name, (int) value_size, value);
 
                 if (ci_memcmp(name, "Content-Length", MIN(name_size, 14))) {
                     bool succ;
