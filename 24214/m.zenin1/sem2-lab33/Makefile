@@ -31,7 +31,7 @@ ${OBJECTS_DIR}/%.o: ${SRC_DIR}/%.c Makefile
 
 ${BUILD_DIR}/main: $(SOURCES:%.c=${OBJECTS_DIR}/%.o)
 	mkdir -p ${BUILD_DIR}
-	${CC} ${CC_ARGS} ${LIBS} -o $@ $^
+	${CC} ${CC_ARGS} -o $@ $^
 
 ${DEPS_DIR}/%.d: ${OBJECTS_DIR}/%.o
 

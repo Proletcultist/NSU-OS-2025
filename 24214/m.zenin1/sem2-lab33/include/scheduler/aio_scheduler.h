@@ -3,6 +3,7 @@
 #include <poll.h>
 #include <stdint.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include "scheduler/task_list.h"
 #include "scheduler/timer.h"
 #include "scheduler/aio_signal.h"
@@ -56,7 +57,7 @@ typedef struct aio_scheduler {
     vector_timer_t timers;
 
     int signals_pipe;
-    volatile sig_atomic_t pending_signals;
+    volatile atomic_uint_fast32_t pending_signals;
     signal_handler_t *signal_handlers[2];
 
     task_t *pending_tasks[2];

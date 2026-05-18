@@ -43,10 +43,12 @@ static void stop_signal_callback(int err, void *udata) {
 }
 
 static void stop_signal_handler(int sig) {
+    int saved_errno = errno;
     if (alive) {
         aio_signal(&sched, SIGGRACEFULSHUT);
         alive = false;
     }
+    errno = saved_errno;
 }
 
 static void accept_connection(ssize_t r, int err, void *udata) {
