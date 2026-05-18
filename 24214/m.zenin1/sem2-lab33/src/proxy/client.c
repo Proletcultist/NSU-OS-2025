@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <errno.h>
+#include <pthread.h>
 #include "scheduler/aio_scheduler.h"
 #include "http.h"
 #include "proxy/util.h"
@@ -149,6 +150,8 @@ static void read_cache_callback(ssize_t r, int err, void *udata) {
 
     char *buffer = get_cache_block_buffer(task->current_block);
     size_t readen = (size_t) r + (size_t) ((char*) task->task.attrs.io.buffer - buffer);
+
+    pthread_mutex_lock(&task->client->entry->mtx);
     if (readen < task->current_block->size) {
         // There is more data in the same block
         task->task.attrs.io.buffer = buffer + readen;
@@ -174,6 +177,7 @@ static void read_cache_callback(ssize_t r, int err, void *udata) {
         cache_entry_add_pending(task->client->entry, task->client);
         free(task);
     }
+    pthread_mutex_unlock(&task->client->entry->mtx);
 }
 
 void client_health_check_callback(int err, time_t time, void *udata) {
@@ -362,6 +366,7 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                         
                         fprintf(stderr, "[Info] %s Cache hit for %s\n", task->client->client_ip, task->client->entry->uri.hostname);
 
+                        pthread_mutex_lock(&task->client->entry->mtx);
                         if (task->client->entry->first_block != NULL && task->client->entry->first_block->size > 0) {
                             // If there is data in first block - read it
                             task->client->state = CLIENT_READING_CACHED;
@@ -402,6 +407,7 @@ void process_request_callback(ssize_t r, int err, void *udata) {
                             cache_entry_add_pending(task->client->entry, task->client);
                             free(task);
                         }
+                        pthread_mutex_unlock(&task->client->entry->mtx);
                     }
                 }
                 return;

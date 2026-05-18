@@ -162,9 +162,11 @@ static void close_server_connection(server_task_t *task) {
     aio_scheduler_schedule(task->server->sched, (task_t*) task);
 }
 
+// Msg must be not null if cache entry is empty of data
 static void early_fail_server_connection(proxy_server_t server, char *msg, size_t msg_size) {
     cache_delete(server.cache_entry->uri);
 
+    pthread_mutex_lock(&server.cache_entry->mtx);
     if (msg != NULL) {
         *((cache_block_external_t*) server.cache_entry->first_block) = (cache_block_external_t) {
             .type = STATIC_EXTERNAL_CACHE_BLOCK,
@@ -176,14 +178,18 @@ static void early_fail_server_connection(proxy_server_t server, char *msg, size_
         };
     }
     server.cache_entry->last_block->finished = true;
+    pthread_mutex_unlock(&server.cache_entry->mtx);
+
     send_cached_to_all_clients(&server, &server.cache_entry->pending, msg, msg_size, true);
 
     cache_entry_put(server.cache_entry);
 }
 
+// Msg must be not null if cache entry is empty of data
 static void fail_server_connection(server_task_t *task, char *msg, size_t msg_size) {
     cache_delete(task->server->cache_entry->uri);
 
+    pthread_mutex_lock(&task->server->cache_entry->mtx);
     if (msg != NULL) {
         *((cache_block_external_t*) task->server->cache_entry->first_block) = (cache_block_external_t) {
             .type = STATIC_EXTERNAL_CACHE_BLOCK,
@@ -195,6 +201,8 @@ static void fail_server_connection(server_task_t *task, char *msg, size_t msg_si
         };
     }
     task->server->cache_entry->last_block->finished = true;
+    pthread_mutex_unlock(&task->server->cache_entry->mtx);
+
     send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, msg, msg_size, true);
 
     close_server_connection(task);
@@ -242,7 +250,7 @@ static void server_health_check_callback(int err, time_t time, void *udata) {
 }
 
 void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry) {
-    entry->references++;
+    __atomic_add_fetch(&entry->references, 1, __ATOMIC_RELAXED);
     proxy_server_t server_val = {
         .state = SERVER_CONNECTION_IN_PROGRESS,
         .sched = sched,
@@ -525,7 +533,10 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
         else {
             fprintf(stderr, "[Info] Server %s terminated connection\n", task->server->cache_entry->uri.hostname);
 
+            pthread_mutex_lock(&task->server->cache_entry->mtx);
             task->server->cache_entry->last_block->finished = true;
+            pthread_mutex_unlock(&task->server->cache_entry->mtx);
+
             send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, NULL, 0, true);
 
             cache_entry_postprocess(task->server->sched, task->server->cache_entry);
@@ -557,12 +568,25 @@ static void fill_up_cache_callback(ssize_t w, int err, void *udata) {
         };
     }
 
+    pthread_mutex_lock(&task->server->cache_entry->mtx);
     task->server->cache_entry->last_block->finished = finished;
     cache_entry_occupy_last_block(task->server->cache_entry, (size_t) w);
     if (following_block != NULL) {
         cache_entry_add_block(task->server->cache_entry, (cache_block_t*) following_block);
     }
-    send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, task->task.attrs.io.buffer, (size_t) w, last);
+    proxy_client_t *processing_start = task->server->cache_entry->pending;
+    task->server->cache_entry->pending = NULL;
+    pthread_mutex_unlock(&task->server->cache_entry->mtx);
+
+    proxy_client_t *processing_end = send_cached_to_all_clients(task->server, &processing_start, task->task.attrs.io.buffer, (size_t) w, last);
+
+    // If there are any clients left after processing, return them to list
+    if (processing_start != NULL) {
+        pthread_mutex_lock(&task->server->cache_entry->mtx);
+        processing_end->next = task->server->cache_entry->pending;
+        task->server->cache_entry->pending = processing_start;
+        pthread_mutex_unlock(&task->server->cache_entry->mtx);
+    }
 
     if (!last) {
         write_next_cache_block(task);
@@ -691,6 +715,7 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                     };
                 }
 
+                pthread_mutex_lock(&task->server->cache_entry->mtx);
                 *((cache_block_external_t*) task->server->cache_entry->first_block) = (cache_block_external_t) {
                     .type = EXTERNAL_CACHE_BLOCK,
                     .size = 0,
@@ -702,7 +727,19 @@ void analyze_response_callback(ssize_t r, int err, void *udata) {
                 if (following_block != NULL) {
                     cache_entry_add_block(task->server->cache_entry, (cache_block_t*) following_block);
                 }
-                send_cached_to_all_clients(task->server, &task->server->cache_entry->pending, buffer, size, last);
+                proxy_client_t *processing_start = task->server->cache_entry->pending;
+                task->server->cache_entry->pending = NULL;
+                pthread_mutex_unlock(&task->server->cache_entry->mtx);
+
+                proxy_client_t *processing_end = send_cached_to_all_clients(task->server, &processing_start, buffer, size, last);
+
+                // If there are any clients left after processing, return them to list
+                if (processing_start != NULL) {
+                    pthread_mutex_lock(&task->server->cache_entry->mtx);
+                    processing_end->next = task->server->cache_entry->pending;
+                    task->server->cache_entry->pending = processing_start;
+                    pthread_mutex_unlock(&task->server->cache_entry->mtx);
+                }
 
                 if (!last) {
                     write_next_cache_block((server_task_t*) task);

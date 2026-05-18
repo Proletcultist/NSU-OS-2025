@@ -1,6 +1,7 @@
 #pragma once
 
 #include <time.h>
+#include <pthread.h>
 #include "http.h"
 #include "proxy/client.h"
 #include "cache/cache_block.h"
@@ -8,6 +9,7 @@
 #define CACHE_ENTRY_INITIALIZER ((cache_entry_t) \
                                  { \
                                     .entry_size = 0, \
+                                    .mtx = PTHREAD_MUTEX_INITIALIZER, \
                                     .first_block = NULL, \
                                     .last_block = NULL, \
                                     .pending = NULL \
@@ -21,6 +23,8 @@ typedef struct cache_entry {
     uri_t uri;
     size_t references;
     size_t entry_size;
+
+    pthread_mutex_t mtx;
 
     cache_block_t *first_block;
     cache_block_t *last_block;
