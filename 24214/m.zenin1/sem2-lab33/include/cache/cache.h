@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdatomic.h>
 #include <time.h>
 #include <pthread.h>
 #include "http.h"
@@ -21,7 +22,7 @@ struct proxy_client;
 
 typedef struct cache_entry {
     uri_t uri;
-    size_t references;
+    atomic_size_t references;
     size_t entry_size;
 
     pthread_mutex_t mtx;

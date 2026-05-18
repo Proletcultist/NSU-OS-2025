@@ -65,12 +65,12 @@ cache_entry_t* cache_encache_or_get_ref(uri_t uri, cache_entry_t *entry) {
             ret = NULL;
         }
         else {
-            __atomic_add_fetch(&entry->references, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add_explicit(&entry->references, 1, memory_order_relaxed);
             ret = entry;
         }
     }
     else {
-        __atomic_add_fetch(&((*ptr)->references), 1, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&((*ptr)->references), 1, memory_order_relaxed);
         ret = *ptr;
     }
 
@@ -101,7 +101,7 @@ void cache_entry_add_block(cache_entry_t *entry, cache_block_t *block) {
 }
 
 void cache_entry_put(cache_entry_t *entry) {
-    if (__atomic_sub_fetch(&entry->references, 1, __ATOMIC_RELAXED) != 0) {
+    if (atomic_fetch_sub_explicit(&entry->references, 1, memory_order_relaxed) != 1) {
         return;
     }
 

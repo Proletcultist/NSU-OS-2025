@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <stdatomic.h>
 #include "scheduler/aio_scheduler.h"
 #include "cache/cache.h"
 #include "proxy/server.h"
@@ -250,7 +251,7 @@ static void server_health_check_callback(int err, time_t time, void *udata) {
 }
 
 void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry) {
-    __atomic_add_fetch(&entry->references, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&entry->references, 1, memory_order_relaxed);
     proxy_server_t server_val = {
         .state = SERVER_CONNECTION_IN_PROGRESS,
         .sched = sched,
