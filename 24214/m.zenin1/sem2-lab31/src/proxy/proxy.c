@@ -37,6 +37,7 @@ static void stop_signal_callback(int err, void *udata) {
        .attrs.ctl = {
            .fd = listening,
            .data = &undelegate_task,
+           .callback = NULL
        }
     };
     aio_scheduler_schedule(&sched, &undelegate_task);
@@ -92,7 +93,7 @@ static void accept_connection(ssize_t r, int err, void *udata) {
     }
     else {
         strncpy(client->client_ip, "Unknown", sizeof(client->client_ip) - 1);
-        client->client_ip[sizeof(client->client_ip - 1)] = '\0';
+        client->client_ip[sizeof(client->client_ip) - 1] = '\0';
     }
 
     client_task_t *delegate_task = malloc(sizeof(client_task_t));
