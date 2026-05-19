@@ -281,7 +281,7 @@ void establish_connect_with_server(aio_scheduler_t *sched, cache_entry_t *entry)
         err = connect(server_fd, current_try->ai_addr, current_try->ai_addrlen);
 
         // Connection in progress
-        if (err < 0 && errno == EINPROGRESS) {
+        if (err < 0 && (errno == EINPROGRESS || errno == EAGAIN)) {
             connect_task = malloc(sizeof(try_connect_to_server_task_t));
             if (connect_task == NULL) {
                 panic("Out of memory");
@@ -449,7 +449,7 @@ void try_connect_callback(ssize_t r, int err, void *udata) {
             connect_res = connect(task->task.attrs.io.fd, current_try->ai_addr, current_try->ai_addrlen);
 
             // Connection in progress
-            if (connect_res < 0 && errno == EINPROGRESS) {
+            if (connect_res < 0 && (errno == EINPROGRESS || errno == EAGAIN)) {
                 task->next_try = current_try->ai_next;
                 aio_scheduler_schedule(task->server->sched, (task_t*) task);
                 break;
