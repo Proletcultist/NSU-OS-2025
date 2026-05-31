@@ -1,0 +1,7 @@
+include_dir=/home/user/Sources/Projects/illumos-sysroot/usr/include
+sys_include_dir=/home/user/Sources/Projects/illumos-sysroot/usr/include
+crt_dir=/home/user/Sources/Projects/illumos-sysroot/usr/lib/64
+lib_dir=/home/user/Sources/Projects/illumos-sysroot/usr/lib/64
+msvc_lib_dir=
+kernel32_lib_dir=
+gcc_dir=

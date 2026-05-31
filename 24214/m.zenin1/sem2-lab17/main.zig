@@ -1,5 +1,5 @@
 const std = @import("std");
-const Mutex = std.Thread.Mutex;
+const Mutex = std.Io.Mutex;
 const Allocator = std.mem.Allocator;
 
 // Node of linked list
@@ -30,7 +30,7 @@ const StringList = struct {
         self.len += 1;
     }
 
-    fn print(self: *StringList, w: *std.io.Writer) !void {
+    fn print(self: *StringList, w: *std.Io.Writer) !void {
         var current = self.first.next;
         while (current != null) : (current = current.?.next) {
             try w.print("{s}\n", .{current.?.value});
@@ -49,7 +49,7 @@ const StringList = struct {
 
 // String list
 var list: StringList = undefined;
-var list_mtx: Mutex = .{};
+var list_mtx: Mutex = std.Io.Mutex.init;
   
 fn sort_list(li: *StringList) void {
     for (0..li.len) |i| {
@@ -80,25 +80,36 @@ fn sort_list(li: *StringList) void {
     }
 }
 
-fn sorter_routine() noreturn {
-    while (true) {
-        list_mtx.lock();
-        sort_list(&list);
-        list_mtx.unlock();
+fn sorter_routine(io: std.Io) void {
+    const sleep_req: std.c.timespec = std.c.timespec{ .sec = 5, .nsec = 0};
 
-        std.Thread.sleep(5000000000);
+    while (true) {
+        // If we caught cancellation error - stop sorter
+        list_mtx.lock(io) catch {
+            break;
+        };
+        sort_list(&list);
+        list_mtx.unlock(io);
+
+        // If we caught cancellation error - stop sorter
+        if (std.c.nanosleep(&sleep_req, null) == -1) {
+            break;
+        }
     }
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    // Get the Io implementation
+    const io = init.io;
+
     // Init buffered stdin reader
     var stdin_buf: [1024]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().reader(&stdin_buf);
+    var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buf);
     const stdin = &stdin_reader.interface;
 
     // Init buffered stdout writer
     var stdout_buf: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buf);
     const stdout = &stdout_writer.interface;
 
     // Init allocator
@@ -111,15 +122,15 @@ pub fn main() !void {
     defer list.deinit();
 
     // Spawn sorter thread
-    _ = try std.Thread.spawn(.{}, sorter_routine, .{});
+    _ = try std.Thread.spawn(.{}, sorter_routine, .{io});
 
-    var input_buffer = std.io.Writer.Allocating.init(allocator);
+    var input_buffer = std.Io.Writer.Allocating.init(allocator);
     defer input_buffer.deinit();
 
     while (true) {
         if (stdin.streamDelimiterLimit(&input_buffer.writer, '\n', .unlimited)) |readen| {
-            list_mtx.lock();
-            defer list_mtx.unlock();
+            list_mtx.lockUncancelable(io);
+            defer list_mtx.unlock(io);
             if (readen == 0 and stdin.seek != stdin.end) {
                 try list.print(stdout);
                 try stdout.flush();
